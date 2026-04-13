@@ -145,6 +145,7 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
+  p->in_mask = 0;
 
   return p;
 }
@@ -169,6 +170,7 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->in_mask = 0;
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -297,6 +299,7 @@ kfork(void)
 
   acquire(&np->lock);
   np->state = RUNNABLE;
+  np->in_mask = p->in_mask;
   release(&np->lock);
 
   return pid;

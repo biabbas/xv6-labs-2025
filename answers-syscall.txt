@@ -1,0 +1,6 @@
+usertrap
+p->trapframe->a7 records the syscall number
+0x200000022 in syscall, 0x200000020 out of syscall
+lw      a3,0(zero) # 0x0, a3 is num.
+virtual address 0 is not mapped in page table. Yes the scause code 0xd which is 13 does correspond to load page fault.
+process name is init when the process crashes, and its pid is 1

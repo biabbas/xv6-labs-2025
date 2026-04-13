@@ -105,3 +105,22 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+// return 0 for success,
+// -1 for failure
+// TODO: Maybe add locking code for mutual exclusion.
+uint64
+sys_interpose(void)
+{
+  int mask, n;
+  char path[MAXPATH];
+  struct proc *p = myproc();
+  argint(0, &mask);
+  if((n = argstr(1, path, MAXPATH)) < 0)
+    return -1;
+  acquire(&p->lock);
+  p->in_mask |= mask;
+  safestrcpy(p->in_path, path, MAXPATH);
+  release(&p->lock);
+  return 0;
+}
