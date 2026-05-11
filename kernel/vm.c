@@ -142,9 +142,28 @@ walkaddr(pagetable_t pagetable, uint64 va)
 
 
 #if defined(LAB_PGTBL) || defined(SOL_MMAP) || defined(SOL_COW)
+char* padding[] = {".. .. ..", ".. ..",".." };
+void print_page(pagetable_t pagetable, int level, uint64 va_p)
+{
+  if(level < 0)
+    panic("print_page: leaf has pte");
+  for(int i=0;i<512;i++)
+  {
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V)==0)
+      continue;
+    uint64 pa = PTE2PA(pte);
+    uint64 va = va_p | ((uint64)i<<(12+9*(level)));
+    printf("%s%p: pte %p pa %p\n", padding[level], (void*)va, (void*)pte, (void*)pa);
+    if((pte & (PTE_R | PTE_W | PTE_X))==0)
+      print_page((pagetable_t)pa, level-1, va);
+  }
+}
+
 void
 vmprint(pagetable_t pagetable) {
-  // your code here
+  printf("page table %p\n", pagetable);
+  print_page(pagetable, 2, 0);
 }
 #endif
 
