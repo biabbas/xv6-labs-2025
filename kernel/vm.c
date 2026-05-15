@@ -179,6 +179,25 @@ kvmmap(pagetable_t kpgtbl, uint64 va, uint64 pa, uint64 sz, int perm)
     panic("kvmmap");
 }
 
+#ifdef LAB_PGTBL
+pte_t *
+super_walk_alloc(pagetable_t pagetable, uint64 va)
+{
+  if(va >= MAXVA)
+    panic("superpagewalk");
+  pte_t *pte= &pagetable[PX(2,va)];
+  printf("l2 = %p, l1 = %p\n", (void*)PX(2, va), (void*)PX(1, va));
+  if(*pte & PTE_V) {
+    pagetable = (pagetable_t)PTE2PA(*pte);
+  } else {
+    if((pagetable = (pde_t*)kalloc()) == 0)
+      return 0;
+    memset(pagetable, 0, PGSIZE);
+    *pte = PA2PTE(pagetable) | PTE_V;
+  }
+  return &pagetable[PX(1, va)];
+}
+#endif
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa.
 // va and size MUST be page-aligned.
@@ -201,7 +220,26 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   
   a = va;
   last = va + size - PGSIZE;
+  #ifdef LAB_PGTBL
+  uint64 sup_last = va+size - SUPERPGSIZE;
+  #endif
   for(;;){
+  #ifdef LAB_PGTBL
+    if((size == SUPERPGSIZE) && (size % SUPERPGSIZE == 0) && (va %SUPERPGSIZE == 0)) {
+      printf("Super page? %p to va %p\n", (void*)pa, (void*)va);
+      if((pte = super_walk_alloc(pagetable, a)) == 0)
+        return -1;
+      if(*pte & PTE_V)
+        panic("mappages super: remap");
+      *pte = PA2PTE(pa) | perm | PTE_V;
+      if((a == sup_last) || (a == last))
+        break;
+      a+= SUPERPGSIZE;
+      va+= SUPERPGSIZE;
+      continue;
+    }
+
+  #endif
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
     if(*pte & PTE_V)
@@ -257,20 +295,14 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   }
 }
 
-
-// Allocate PTEs and physical memory to grow process from oldsz to
-// newsz, which need not be page aligned.  Returns new size or 0 on error.
 uint64
-uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
+uvmalloc4k(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 {
   char *mem;
   uint64 a;
   int sz;
-
-  if(newsz < oldsz)
-    return oldsz;
-
   oldsz = PGROUNDUP(oldsz);
+  printf("Allocating %p to %p with 4kb pages\n", (void*)oldsz, (void*)newsz);
   for(a = oldsz; a < newsz; a += sz){
     sz = PGSIZE;
     mem = kalloc();
@@ -287,6 +319,56 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
       return 0;
     }
   }
+  return newsz;
+}
+
+// Allocate PTEs and physical memory to grow process from oldsz to
+// newsz, which need not be page aligned.  Returns new size or 0 on error.
+uint64
+uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
+{
+  printf("uvmalloc: %p to %p\n", (void*)oldsz, (void*)newsz);
+
+  if(newsz < oldsz)
+    return oldsz;
+
+#ifdef LAB_PGTBL
+  char *mem;
+  uint64 a;
+  int sz;
+  uint64 sup = SUPERPGROUNDUP(oldsz);
+  if (((newsz - sup) > SUPERPGSIZE) && (sup < newsz))
+  {
+    if((sup-oldsz)> PGSIZE)
+      if(uvmalloc4k(pagetable, oldsz, sup, xperm) != sup) // Round up memory being allocated as pages.
+        panic("uvmalloc: roundup superpage memory with 4kb page error");
+    uint64 supnewsz = SUPERPGROUNDDOWN(newsz);
+    printf("Allocating %p to %p with superpage\n",(void*)sup, (void*)supnewsz);
+    for (a = sup; a < supnewsz; a+=sz){
+      sz = SUPERPGSIZE;
+      mem = superalloc();
+      if(mem == 0)
+      {
+        uvmdealloc(pagetable, a, oldsz);
+        return 0;
+      }
+      memset(mem, 0, sz);
+      printf("mapping superpage %p pa %p\n",(void*)a, mem);
+      if(mappages(pagetable, a, sz, (uint64)mem, PTE_R|PTE_U|xperm) != 0){
+        kfree(mem);
+        uvmdealloc(pagetable, a, oldsz);
+        return 0;
+      }
+    }
+    if(supnewsz >= newsz)
+      return newsz;
+    else
+      oldsz = a;
+
+  }
+
+#endif
+  newsz = uvmalloc4k(pagetable, oldsz, newsz, xperm);
   return newsz;
 }
 

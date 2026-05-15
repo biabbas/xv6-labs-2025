@@ -21,6 +21,9 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
+#ifdef LAB_PGTBL
+  struct run *superlist;
+#endif
 } kmem;
 
 void
@@ -34,10 +37,60 @@ void
 freerange(void *pa_start, void *pa_end)
 {
   char *p;
+#ifdef LAB_PGTBL
+  p = (char*)SUPERPGROUNDUP((uint64)pa_start);
+// Utilize the ignored memory that is rounded by allocating to 4kb pages.
+  char* b = (char*)PGROUNDUP((uint64)pa_start);
+  for(; b + PGSIZE <= (char*)p; b += PGSIZE)
+    kfree(b);
+  for(int i=0;i<20;i++)
+  {
+    superfree(p);
+    p+= SUPERPGSIZE;
+  };
+  p = (char*)PGROUNDUP((uint64)p);
+#else
   p = (char*)PGROUNDUP((uint64)pa_start);
+#endif
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
     kfree(p);
 }
+
+#ifdef LAB_PGTBL
+
+void
+superfree(void * pa)
+{
+  struct run* r;
+
+  if(((uint64)pa % SUPERPGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("superfree");
+
+  r = (struct run*)pa;
+
+  acquire(&kmem.lock);
+  r->next = kmem.superlist;
+  kmem.superlist = r;
+  release(&kmem.lock);
+}
+
+void*
+superalloc(void)
+{
+  struct run* r;
+
+  acquire(&kmem.lock);
+  r = kmem.superlist;
+  if(r)
+    kmem.superlist = r->next;
+  release(&kmem.lock);
+
+  if(r)
+    memset(r, 10, SUPERPGSIZE);
+  return r;
+}
+
+#endif
 
 // Free the page of physical memory pointed at by pa,
 // which normally should have been returned by a
