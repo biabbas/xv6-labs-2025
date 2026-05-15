@@ -225,7 +225,12 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   #endif
   for(;;){
   #ifdef LAB_PGTBL
-    if((size == SUPERPGSIZE) && (size % SUPERPGSIZE == 0) && (va %SUPERPGSIZE == 0)) {
+    if(perm & PTE_S) {
+      if((va % PGSIZE) != 0)
+        panic("mappages: va not aligned to superpage");
+
+       if((size % PGSIZE) != 0)
+        panic("mappages: size not aligned to superpage");
       printf("Super page? %p to va %p\n", (void*)pa, (void*)va);
       if((pte = super_walk_alloc(pagetable, a)) == 0)
         return -1;
@@ -354,7 +359,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
       }
       memset(mem, 0, sz);
       printf("mapping superpage %p pa %p\n",(void*)a, mem);
-      if(mappages(pagetable, a, sz, (uint64)mem, PTE_R|PTE_U|xperm) != 0){
+      if(mappages(pagetable, a, sz, (uint64)mem, PTE_R|PTE_U|PTE_S|xperm) != 0){
         kfree(mem);
         uvmdealloc(pagetable, a, oldsz);
         return 0;
@@ -445,6 +450,19 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     szinc = PGSIZE;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
+#ifdef LAB_PGTBL
+    if(flags & PTE_S){
+      if((mem = superalloc())==0)
+        goto err;
+      memmove(mem, (char*)pa, SUPERPGSIZE);
+      if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+        superfree(mem);
+        goto err;
+      }
+      szinc = SUPERPGSIZE;
+      continue;
+    }
+#endif
     if((mem = kalloc()) == 0)
       goto err;
     memmove(mem, (char*)pa, PGSIZE);
