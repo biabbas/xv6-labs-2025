@@ -186,7 +186,6 @@ super_walk_alloc(pagetable_t pagetable, uint64 va)
   if(va >= MAXVA)
     panic("superpagewalk");
   pte_t *pte= &pagetable[PX(2,va)];
-  printf("l2 = %p, l1 = %p\n", (void*)PX(2, va), (void*)PX(1, va));
   if(*pte & PTE_V) {
     pagetable = (pagetable_t)PTE2PA(*pte);
   } else {
@@ -231,7 +230,6 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
 
        if((size % PGSIZE) != 0)
         panic("mappages: size not aligned to superpage");
-      printf("Super page? %p to va %p\n", (void*)pa, (void*)va);
       if((pte = super_walk_alloc(pagetable, a)) == 0)
         return -1;
       if(*pte & PTE_V)
@@ -277,23 +275,43 @@ uvmcreate()
 void
 uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 {
-  uint64 a;
+  uint64 a, last;
   pte_t *pte;
   int sz = PGSIZE;
 
   if((va % PGSIZE) != 0)
     panic("uvmunmap: not aligned");
 
-  for(a = va; a < va + npages*PGSIZE; a += sz){
+  last = va+npages*PGSIZE;
+  for(a = va; a < last; a += sz){
     if((pte = walk(pagetable, a, 0)) == 0) // leaf page table entry allocated?
       continue;
     if((*pte & PTE_V) == 0)  // has physical page been allocated?
       continue;
     sz = PGSIZE;
-    if(PTE_FLAGS(*pte) == PTE_V)
+    uint64 flags = PTE_FLAGS(*pte);
+    if(flags == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
       uint64 pa = PTE2PA(*pte);
+#ifdef LAB_PGTBL
+      if(flags & PTE_S)
+      {
+        if((a+SUPERPGSIZE) <= last)
+        {
+          superfree((void*)pa);
+          sz = SUPERPGSIZE;
+        }
+        else{ // Demote a superpage.
+          *pte = 0;
+          if(mappages(pagetable, SUPERPGROUNDDOWN(a), SUPERPGSIZE, pa, flags^PTE_S) != 0)
+            panic("uvmunmap: demoting superpage failed");
+          a-=sz;
+          continue;
+        }
+      }
+      else
+#endif
       kfree((void*)pa);
     }
     *pte = 0;
@@ -307,7 +325,6 @@ uvmalloc4k(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
   uint64 a;
   int sz;
   oldsz = PGROUNDUP(oldsz);
-  printf("Allocating %p to %p with 4kb pages\n", (void*)oldsz, (void*)newsz);
   for(a = oldsz; a < newsz; a += sz){
     sz = PGSIZE;
     mem = kalloc();
@@ -332,8 +349,6 @@ uvmalloc4k(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 uint64
 uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 {
-  printf("uvmalloc: %p to %p\n", (void*)oldsz, (void*)newsz);
-
   if(newsz < oldsz)
     return oldsz;
 
@@ -348,7 +363,6 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
       if(uvmalloc4k(pagetable, oldsz, sup, xperm) != sup) // Round up memory being allocated as pages.
         panic("uvmalloc: roundup superpage memory with 4kb page error");
     uint64 supnewsz = SUPERPGROUNDDOWN(newsz);
-    printf("Allocating %p to %p with superpage\n",(void*)sup, (void*)supnewsz);
     for (a = sup; a < supnewsz; a+=sz){
       sz = SUPERPGSIZE;
       mem = superalloc();
@@ -358,7 +372,6 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
         return 0;
       }
       memset(mem, 0, sz);
-      printf("mapping superpage %p pa %p\n",(void*)a, mem);
       if(mappages(pagetable, a, sz, (uint64)mem, PTE_R|PTE_U|PTE_S|xperm) != 0){
         kfree(mem);
         uvmdealloc(pagetable, a, oldsz);
