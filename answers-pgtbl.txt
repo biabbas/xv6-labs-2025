@@ -1,0 +1,55 @@
+1. Other simple read-only system calls like uptime() or getppid()
+could also be made faster using the shared USYSCALL page. The kernel
+could store values such as the system tick count or parent PID in
+that page, and user programs could read them directly without making
+a syscall. This avoids the overhead of trapping into the kernel and
+switching privilege modes, making these operations much faster.
+
+The leaf pages are the entries whose PTEs have one or more of the `R/W/X` bits set. These correspond to actual mapped memory pages.
+
+| Virtual Address | Logical Meaning | PTE Flags            | Explanation                                                   |
+| --------------- | --------------- | -------------------- | ------------------------------------------------------------- |
+| `0x0`           | user text/code  | `0x5b = V,R,X,U`     | executable user program instructions                          |
+| `0x1000`        | user text/code  | `0x5b = V,R,X,U`     | more executable code                                          |
+| `0x2000`        | user data/heap  | `0xd7 = V,R,W,U,A,D` | writable user memory                                          |
+| `0x3000`        | guard page      | `0x07 = V,R,W`       | kernel-only inaccessible-to-user page below stack             |
+| `0x4000`        | user stack      | `0xd7 = V,R,W,U,A,D` | user stack page                                               |
+| `0x3fffffd000`  | USYSCALL page   | `0x53 = V,R,U`       | read-only shared userspace/kernel page storing PID            |
+| `0x3fffffe000`  | trapframe       | `0xc7 = V,R,W`       | per-process trapframe used during traps/syscalls; kernel-only |
+| `0x3ffffff000`  | trampoline      | `0x4b = V,R,X`       | shared trap entry/exit code between user and kernel           |
+
+The non-leaf entries:
+
+```text id="a8zv9w"
+0x0000000000000000
+0x0000003fc0000000
+0x0000003fffe00000
+```
+
+point to lower-level page tables and therefore only have `V` set.
+
+This output corresponds to the earlier `print_pgtbl()` exercise because both are printing the same hierarchical Sv39 page-table structure:
+
+```text id="n3k0ua"
+L2 → L1 → L0 → mapped page
+```
+
+The indentation shows traversal depth through the page-table levels. The final indented entries are the actual mapped leaf pages used by the process.
+
+The leaf entries in the `vmprint` output correspond to actual mapped memory pages of the process.
+
+* `0x0` and `0x1000` contain the user program’s text/code segment. Their PTE flags (`0x5b`) include `V`, `R`, `X`, and `U`, meaning the pages are valid, readable, executable, and accessible from user mode.
+
+* `0x2000` contains user data or heap memory. Its flags (`0xd7`) include `V`, `R`, `W`, and `U`, so the page is valid, readable, writable, and user-accessible.
+
+* `0x3000` is the guard page below the user stack. Its flags (`0x07`) do not include `U`, so user code cannot access it.
+
+* `0x4000` is the user stack page. Its flags (`0xd7`) indicate readable and writable user memory.
+
+* `0x3fffffd000` is the `USYSCALL` page added in this lab. Its flags (`0x53`) include `V`, `R`, and `U`, making it readable from userspace but not writable or executable.
+
+* `0x3fffffe000` is the trapframe page used during traps and syscalls. Its flags (`0xc7`) make it kernel-readable/writable but not user-accessible.
+
+* `0x3ffffff000` is the trampoline page containing trap entry/exit code shared by all processes. Its flags (`0x4b`) include `V`, `R`, and `X`, so it is executable but not writable.
+
+This relates to the earlier `print_pgtbl()` exercise because both outputs show the same three-level Sv39 page-table hierarchy. The indentation represents traversal through L2, L1, and L0 page tables, while the leaf entries are the actual virtual-to-physical mappings used by the process.
