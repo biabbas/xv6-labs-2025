@@ -365,11 +365,9 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
     uint64 supnewsz = SUPERPGROUNDDOWN(newsz);
     for (a = sup; a < supnewsz; a+=sz){
       sz = SUPERPGSIZE;
-      mem = superalloc();
-      if(mem == 0)
+      if((mem = superalloc()) == 0)
       {
-        uvmdealloc(pagetable, a, oldsz);
-        return 0;
+        return uvmalloc4k(pagetable, a, newsz, xperm);
       }
       memset(mem, 0, sz);
       if(mappages(pagetable, a, sz, (uint64)mem, PTE_R|PTE_U|PTE_S|xperm) != 0){
@@ -465,12 +463,18 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     flags = PTE_FLAGS(*pte);
 #ifdef LAB_PGTBL
     if(flags & PTE_S){
-      if((mem = superalloc())==0)
-        goto err;
-      memmove(mem, (char*)pa, SUPERPGSIZE);
-      if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-        superfree(mem);
-        goto err;
+      if((mem = superalloc())==0){
+        flags = flags ^ PTE_S;
+        uint64 suplast = i+SUPERPGSIZE;
+        if(uvmalloc4k(new, i, suplast, flags)!= suplast)
+         goto err;
+      }
+      else{
+        memmove(mem, (char*)pa, SUPERPGSIZE);
+        if(mappages(new, i, SUPERPGSIZE, (uint64)mem, flags) != 0){
+          superfree(mem);
+          goto err;
+        }
       }
       szinc = SUPERPGSIZE;
       continue;
