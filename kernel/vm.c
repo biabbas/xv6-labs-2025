@@ -335,7 +335,7 @@ uvmalloc4k(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 #ifndef LAB_SYSCALL
     memset(mem, 0, sz);
  #endif
-    if(mappages(pagetable, a, sz, (uint64)mem, PTE_R|PTE_U|xperm) != 0){
+    if(mappages(pagetable, a+myproc()->aslroff, sz, (uint64)mem, PTE_R|PTE_U|xperm) != 0){
       kfree(mem);
       uvmdealloc(pagetable, a, oldsz);
       return 0;
@@ -370,7 +370,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
         return uvmalloc4k(pagetable, a, newsz, xperm);
       }
       memset(mem, 0, sz);
-      if(mappages(pagetable, a, sz, (uint64)mem, PTE_R|PTE_U|PTE_S|xperm) != 0){
+      if(mappages(pagetable, a + myproc()->aslroff, sz, (uint64)mem, PTE_R|PTE_U|PTE_S|xperm) != 0){
         kfree(mem);
         uvmdealloc(pagetable, a, oldsz);
         return 0;
@@ -400,7 +400,7 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 
   if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
     int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
-    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
+    uvmunmap(pagetable, PGROUNDUP(newsz)+myproc()->aslroff, npages, 1);
   }
 
   return newsz;
@@ -433,7 +433,7 @@ void
 uvmfree(pagetable_t pagetable, uint64 sz)
 {
   if(sz > 0)
-    uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
+    uvmunmap(pagetable, myproc()->aslroff, PGROUNDUP(sz)/PGSIZE, 1);
   freewalk(pagetable);
 }
 
@@ -447,12 +447,13 @@ int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
-  uint64 pa, i;
+  uint64 pa, i,j;
   uint flags;
   char *mem;
   int szinc = PGSIZE;
 
-  for(i = 0; i < sz; i += szinc){
+  for(j = 0; j < sz; j += szinc){
+    i = j + myproc()->aslroff;
     if((pte = walk(old, i, 0)) == 0)
       continue;
     if((*pte & PTE_V) == 0) {
@@ -491,7 +492,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+  uvmunmap(new, myproc()->aslroff, i / PGSIZE, 1);
   return -1;
 }
 

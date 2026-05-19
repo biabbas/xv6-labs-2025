@@ -123,6 +123,8 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
+  p->aslroff = (uint64)p->pid << 21;
+  printf("pid = %d, Aslr off = %p\n", p->pid, (void*)p->aslroff);
   p->state = USED;
 
   // Allocate a trapframe page.

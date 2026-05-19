@@ -71,7 +71,7 @@ kexec(char *path, char **argv)
     if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz, flags2perm(ph.flags))) == 0)
       goto bad;
     sz = sz1;
-    if(loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0)
+    if(loadseg(pagetable, ph.vaddr+p->aslroff, ip, ph.off, ph.filesz) < 0)
       goto bad;
   }
   iunlockput(ip);
@@ -89,10 +89,11 @@ kexec(char *path, char **argv)
   if((sz1 = uvmalloc(pagetable, sz, sz + (USERSTACK+1)*PGSIZE, PTE_W)) == 0)
     goto bad;
   sz = sz1;
-  uvmclear(pagetable, sz-(USERSTACK+1)*PGSIZE);
-  sp = sz;
+  uvmclear(pagetable, sz-(USERSTACK+1)*PGSIZE+p->aslroff);
+  sp = sz+myproc()->aslroff;
+  vmprint(pagetable);
   stackbase = sp - USERSTACK*PGSIZE;
-
+  printf("Stackbase = %p\n", (void*)stackbase);
   // Copy argument strings into new stack, remember their
   // addresses in ustack[].
   for(argc = 0; argv[argc]; argc++) {
@@ -131,7 +132,7 @@ kexec(char *path, char **argv)
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
   p->sz = sz;
-  p->trapframe->epc = elf.entry;  // initial program counter = ulib.c:start()
+  p->trapframe->epc = elf.entry+p->aslroff;  // initial program counter = ulib.c:start()
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
