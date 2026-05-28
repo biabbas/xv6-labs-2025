@@ -82,7 +82,21 @@ usertrap(void)
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)
+  {
+    struct proc* p = myproc();
+    if(p && (p->ticks_target > 0) && (p->trapframe_copy == 0))
+    {
+      acquire(&p->lock);
+      if((++p->ticks_count) >= p->ticks_target){
+        p->ticks_count = 0;
+        p->trapframe_copy = (struct trapframe*)kalloc();
+        memmove(p->trapframe_copy, p->trapframe, sizeof(struct trapframe));
+        p->trapframe->epc = p->sig_handler;
+      }
+      release(&p->lock);
+    }
     yield();
+  }
 
   prepare_return();
 
@@ -170,18 +184,7 @@ clockintr()
     wakeup(&ticks);
     release(&tickslock);
   }
-  struct proc* p = myproc();
-  if(p && (p->ticks_target > 0) && (p->trapframe_copy == 0))
-  {
-    acquire(&p->lock);
-    if((++p->ticks_count) >= p->ticks_target){
-      p->ticks_count = 0;
-      p->trapframe_copy = (struct trapframe*)kalloc();
-      memmove(p->trapframe_copy, p->trapframe, sizeof(struct trapframe));
-      p->trapframe->epc = p->sig_handler;
-    }
-    release(&p->lock);
-  }
+
   // ask for the next timer interrupt. this also clears
   // the interrupt request. 1000000 is about a tenth
   // of a second.
