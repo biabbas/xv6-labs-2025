@@ -104,4 +104,8 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  uint64 sig_handler;           // Stores signal handler function address for sigalarm
+  int ticks_target;             // Stores sigalarm value
+  int ticks_count;              // Private ticks counter for sigalarm
+  struct trapframe *trapframe_copy;// Trapframe copy, useful when running sigalarm handler.
 };

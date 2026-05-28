@@ -503,3 +503,36 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_sigalarm(void)
+{
+  int ticks;
+  uint64 sig_handler;
+  argint(0, &ticks);
+  argaddr(1, &sig_handler);
+  struct proc* p = myproc();
+  acquire(&p->lock);
+  p->ticks_target = ticks;
+  p->ticks_count = 0;
+  p->sig_handler = sig_handler;
+  release(&p->lock);
+  return 0;
+}
+
+uint64
+sys_sigret(void)
+{
+  struct proc* p = myproc();
+  if(p->trapframe_copy == 0)
+    return -1;
+
+  acquire(&p->lock);
+  uint64 a0 = p->trapframe_copy->a0;
+  memmove(p->trapframe, p->trapframe_copy, sizeof(struct trapframe));
+  kfree(p->trapframe_copy);
+  p->trapframe_copy = 0;
+  release(&p->lock);
+
+  return a0;
+}
