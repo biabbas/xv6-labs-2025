@@ -1,0 +1,6 @@
+1. a0 to a6 hold arguments in riscv. a2 holds 13 for printf argument in main.
+2. The compiler has performed constant folding and computed the result 12 for the expression f(8)+1, thus a1 is loaded with 12.
+3. address 0x6f6 of the process. This is a statically compiled executable, hence this is the address if the process is return.
+4. value in a0 is 1.
+5. the output in riscv is "HE110 World". In a big endian machine the value i should be set to 0x726c6400 to get the same output.
+6. Any value that was in a1 register.
