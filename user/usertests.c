@@ -2696,6 +2696,30 @@ lazy_copy(char *s)
   exit(0);
 }
 
+void run_test_file(char* s){
+  int pid, xstatus;
+  char* exec_args[2];
+  exec_args[0] = s;
+  exec_args[1] = 0;
+  pid=fork();
+  if(pid == 0){
+    if(exec(s, exec_args) < 0){
+      printf("For running %s: exec failed\n", s);
+      exit(1);
+    }
+  }
+  if(wait(&xstatus) != pid){
+    printf("while running %s: wait failed\n", s);
+    exit(1);
+  }
+  exit(xstatus);
+}
+
+void
+mmaptest(char* s){
+  run_test_file("mmaptest");
+}
+
 struct test {
   void (*f)(char *);
   char *s;
@@ -2763,6 +2787,7 @@ struct test {
   {lazy_alloc, "lazy_alloc"},
   {lazy_unmap, "lazy_unmap"},
   {lazy_copy, "lazy_copy"},
+  {mmaptest, "mmaptest"},
   { 0, 0},
 };
 
@@ -3051,14 +3076,18 @@ outofinodes(char *s)
   }
 }
 
+void
+cowtest(char* s){
+  run_test_file("cowtest");
+}
 struct test slowtests[] = {
   {bigdir, "bigdir"},
+  {cowtest, "cowtest"}, 
   {manywrites, "manywrites"},
   {badwrite, "badwrite" },
   {execout, "execout"},
   {diskfull, "diskfull"},
-  {outofinodes, "outofinodes"},
-    
+  {outofinodes, "outofinodes"}, 
   { 0, 0},
 };
 

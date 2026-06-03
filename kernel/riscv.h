@@ -369,6 +369,7 @@ r_fp()
 #define PTE_X (1L << 3)
 #define PTE_U (1L << 4) // user can access
 #define PTE_D (1L << 7) // Dirty page?
+#define PTE_COW (1L << 8) // USE RSW BIT 1 to indicate COW pages. Set on pages which had write permission before
 
 // shift a physical address to the right place for a PTE.
 #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
@@ -376,6 +377,8 @@ r_fp()
 #define PTE2PA(pte) (((pte) >> 10) << 12)
 
 #define PTE_FLAGS(pte) ((pte) & 0x3FF)
+
+#define PA2IDX(x) ((uint64)(x)-KERNBASE)/PGSIZE
 
 // extract the three 9-bit page table indices from a virtual address.
 #define PXMASK          0x1FF // 9 bits

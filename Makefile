@@ -270,6 +270,12 @@ UPROGS += \
 	$U/_mmaptest
 endif
 
+ifeq ($(LAB),main)
+UPROGS += \
+	$U/_cowtest \
+	$U/_mmaptest
+endif
+
 ifeq ($(LAB),net)
 UPROGS += \
 	$U/_nettest

@@ -62,6 +62,8 @@ void            ireclaim(int);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+void            page_inc_ref(uint64 pa);
+void*           cow_page_alloc(uint64 pa);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -181,7 +183,7 @@ uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
-int             ismapped(pagetable_t, uint64);
+int             ismapped(pte_t*);
 uint64          vmfault(pagetable_t, uint64, int);
 void            vmprint(pagetable_t);
 #ifdef LAB_PGTBL
