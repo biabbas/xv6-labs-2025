@@ -482,6 +482,8 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
     }
     uint64 flags = (PTE_FLAGS(*pte) & ~PTE_COW) | PTE_W;
     *pte = PA2PTE(mem) | flags;
+    asm volatile("sfence.vma %0, zero" : : "r"(va) : "memory");
+    // sfence.vma zero, zero is also fine for small os such as xv6
     return mem;
   }
   mem = (uint64) kalloc();
