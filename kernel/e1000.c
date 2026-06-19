@@ -90,35 +90,57 @@ e1000_init(uint32 *xregs)
   regs[E1000_IMS] = (1 << 7); // RXDW -- Receiver Descriptor Write Back
 }
 
+// buf contains an ethernet frame; This programs it into
+// the TX descriptor ring so that the e1000 sends it.
+// return 0 on success.
+// return -1 on failure (e.g., there is no descriptor available)
+// so that the caller knows to free buf.
 int
 e1000_transmit(char *buf, int len)
 {
-  //
-  // Your code here.
-  //
-  // buf contains an ethernet frame; program it into
-  // the TX descriptor ring so that the e1000 sends it. Stash
-  // a pointer so that it can be freed after send completes.
-  //
-  // return 0 on success.
-  // return -1 on failure (e.g., there is no descriptor available)
-  // so that the caller knows to free buf.
-  //
-
-  
+  struct tx_desc* tx_tail;
+  acquire(&e1000_lock);
+  tx_tail = &tx_ring[regs[E1000_TDT]];
+  if(!(tx_tail->status & E1000_TXD_STAT_DD))
+    return -1; // Tx send ring overflow
+  if(tx_tail->addr != 0)
+    kfree((void*)(tx_tail->addr));
+  tx_tail->addr = (uint64)buf;
+  tx_tail->length = len;
+  tx_tail->cmd = E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;
+  tx_tail->status = 0;
+  regs[E1000_TDT] = (regs[E1000_TDT]+1)%TX_RING_SIZE;
+  release(&e1000_lock);
   return 0;
 }
 
+// Checks for packets that have arrived from the e1000
+// Creates and delivers a buf for each packet (using net_rx()).
 static void
 e1000_recv(void)
 {
-  //
-  // Your code here.
-  //
-  // Check for packets that have arrived from the e1000
-  // Create and deliver a buf for each packet (using net_rx()).
-  //
-
+  int rx_tail;
+  void* net_addr[RX_RING_SIZE];
+  uint16 buf_lens[RX_RING_SIZE];
+  int num_of_packets=0;
+  struct rx_desc* r_tail;
+  acquire(&e1000_lock);
+  rx_tail = (regs[E1000_RDT]+1)%RX_RING_SIZE;
+  while(rx_ring[rx_tail].status & E1000_RXD_STAT_DD){
+    r_tail = &rx_ring[rx_tail];
+    net_addr[num_of_packets] = (void*)(r_tail->addr);
+    buf_lens[num_of_packets++] = r_tail->length;
+    r_tail->addr = (uint64)kalloc();
+    if(r_tail->addr == 0)
+      panic("E1000_recv: kalloc");
+    r_tail->status = r_tail->length = 0;
+    regs[E1000_RDT] = rx_tail;
+    rx_tail = (rx_tail+1)%RX_RING_SIZE;
+  }
+  release(&e1000_lock);
+  for(int i = 0;i<num_of_packets; i++){
+    net_rx(net_addr[i], buf_lens[i]);
+  }
 }
 
 void
