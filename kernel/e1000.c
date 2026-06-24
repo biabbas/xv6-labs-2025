@@ -120,27 +120,34 @@ static void
 e1000_recv(void)
 {
   int rx_tail;
-  void* net_addr[RX_RING_SIZE];
-  uint16 buf_lens[RX_RING_SIZE];
-  int num_of_packets=0;
+  // void* net_addr[RX_RING_SIZE];
+  // uint16 buf_lens[RX_RING_SIZE];
+  void* bufaddr;
+  uint16 buflen;
+  // int num_of_packets=0;
   struct rx_desc* r_tail;
   acquire(&e1000_lock);
   rx_tail = (regs[E1000_RDT]+1)%RX_RING_SIZE;
   while(rx_ring[rx_tail].status & E1000_RXD_STAT_DD){
     r_tail = &rx_ring[rx_tail];
-    net_addr[num_of_packets] = (void*)(r_tail->addr);
-    buf_lens[num_of_packets++] = r_tail->length;
+    bufaddr = (void*)r_tail->addr;
+    buflen = r_tail->length;
     r_tail->addr = (uint64)kalloc();
     if(r_tail->addr == 0)
       panic("E1000_recv: kalloc");
     r_tail->status = r_tail->length = 0;
     regs[E1000_RDT] = rx_tail;
     rx_tail = (rx_tail+1)%RX_RING_SIZE;
+    release(&e1000_lock);
+    net_rx(bufaddr, buflen);
+    acquire(&e1000_lock);
   }
   release(&e1000_lock);
-  for(int i = 0;i<num_of_packets; i++){
-    net_rx(net_addr[i], buf_lens[i]);
-  }
+  // for(int i = 0;i<num_of_packets; i++){ // This used to overflow as the e1000 driver would sometimes replenish before I processed one full ring.
+  //   printf("net_rx([%d](%p, %d)\n", i, net_addr[i], buf_lens[i]);
+  //   printf("rx tail -> status = %d, r tail->addr = %p\n", rx_ring[0].status, (void*)rx_ring[0].addr);
+  //   net_rx(net_addr[i], buf_lens[i]);
+  // }
 }
 
 void
