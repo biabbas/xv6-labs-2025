@@ -17,6 +17,20 @@ static uint32 local_ip = MAKE_IP_ADDR(10, 0, 2, 15);
 // qemu host's ethernet address.
 static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
+#define MAX_PKTS ((PGSIZE - sizeof(struct spinlock) - 2*sizeof(uint32))/sizeof(void *)) // make sure sys_packets fits in a page.
+// #define MAX_PKTS 10
+struct sys_packets{
+  struct spinlock recv_lock;
+  uint32 head;
+  uint32 tail;
+  void* packets[MAX_PKTS]; // Store packets here. Head and tail will be used for indexing in a ring queue fashion.
+};
+_Static_assert(sizeof(struct sys_packets) == PGSIZE,
+               "sys_packets should occupy exactly one page");
+
+// UDP Ports
+static struct sys_packets* u_port[1<<16] = {0};
+
 static struct spinlock netlock;
 
 void
@@ -34,11 +48,26 @@ netinit(void)
 uint64
 sys_bind(void)
 {
-  //
-  // Your code here.
-  //
-
-  return -1;
+  int port_num;
+  struct sys_packets *new_mem;
+  argint(0, &port_num);
+  if(port_num < 0 || port_num > 65535)
+    return -1;
+  acquire(&netlock);
+  if(u_port[port_num] != 0){
+    release(&netlock);
+    return -1;
+  }
+  new_mem = kalloc();
+  if(new_mem == 0){
+    release(&netlock);
+    return -1;
+  }
+  u_port[port_num] = new_mem;
+  release(&netlock);
+  memset(new_mem, 0, PGSIZE);
+  initlock(&new_mem->recv_lock, "uport_lock");
+  return 0;
 }
 
 //
@@ -49,10 +78,28 @@ sys_bind(void)
 uint64
 sys_unbind(void)
 {
-  //
-  // Optional: Your code here.
-  //
-
+  int port_num;
+  struct sys_packets* old_mem;
+  argint(0, &port_num);
+  if(port_num < 0 || port_num > 65535)
+    return -1;
+  acquire(&netlock);
+  if(u_port[port_num] == 0){
+    release(&netlock);
+    return -1;
+  }
+  old_mem = u_port[port_num];
+  u_port[port_num] = 0;
+  release(&netlock);
+  acquire(&old_mem->recv_lock);
+  for(int i = old_mem->head; i != old_mem->tail;)
+  {
+    if(old_mem->packets[i] != 0)
+      kfree(old_mem->packets[i]);
+    i = (i+1)%MAX_PKTS;
+  }
+  release(&old_mem->recv_lock);
+  kfree(old_mem);
   return 0;
 }
 
@@ -74,9 +121,70 @@ sys_unbind(void)
 uint64
 sys_recv(void)
 {
-  //
-  // Your code here.
-  //
+  int dport;
+  uint64 srcaddr;
+  uint64 sportaddr;
+  uint64 bufaddr;
+  int maxlen;
+  uint32 head;
+  struct sys_packets* upack;
+  struct proc* p = myproc();
+  void* packet;
+  argint(0, &dport);
+  argaddr(1, &srcaddr);
+  argaddr(2, &sportaddr);
+  argaddr(3, &bufaddr);
+  argint(4, &maxlen);
+  if(dport < 0 || dport > 65535)
+    return -1;
+  if(maxlen < 0)
+    return -1;
+  while(1)
+  {
+    acquire(&netlock);
+    upack = u_port[dport];
+    if(upack == 0)
+    {
+      release(&netlock);
+      return -1;
+    }
+    acquire(&upack->recv_lock);
+    head = upack->head;
+    packet = upack->packets[head];
+    if(packet == 0){
+      if(head != upack->tail)
+        panic("sys_recv: unexpected packet queue state");
+      release(&upack->recv_lock);
+      release(&netlock);
+      yield();
+    }
+    else {
+      upack->packets[head] = 0;
+      upack->head = (head+1) % MAX_PKTS;
+      release(&upack->recv_lock);
+      release(&netlock);
+      break;
+    }
+  }
+  struct ip *ip = (struct ip*)((struct eth*)packet+1);
+  uint32 src = ntohl(ip->ip_src);
+  struct udp* udp = (struct udp*)(ip+1);
+  int buflen = ntohs(udp->ulen) - sizeof(struct udp);
+  int bytes_to_copy = (buflen < maxlen)? buflen : maxlen;
+  if(bytes_to_copy < 0)
+    panic("sys_recv: negative bytes to copy");
+  char* payload = (char*)(udp+1);
+  uint16 sport = ntohs(udp->sport);
+  if(copyout(p->pagetable, srcaddr, (char*)&src, sizeof(uint32)) != 0)
+    goto err;
+  if(copyout(p->pagetable, sportaddr, (char*)&sport, sizeof(uint16)) != 0)
+    goto err;
+  if(copyout(p->pagetable, bufaddr, payload, bytes_to_copy) != 0)
+    goto err;
+  kfree(packet);
+  return bytes_to_copy;
+  err:
+  kfree(packet);
   return -1;
 }
 
@@ -188,10 +296,43 @@ ip_rx(char *buf, int len)
     printf("ip_rx: received an IP packet\n");
   seen_ip = 1;
 
-  //
-  // Your code here.
-  //
-  
+  if (len < sizeof(struct eth) + sizeof(struct ip) + sizeof(struct udp)) {
+    kfree(buf);
+    return;
+  }
+
+  struct ip *ip = (struct ip*)((struct eth*)buf+1);
+  if(ip->ip_p != IPPROTO_UDP){
+    kfree(buf); // Only udp is supported for now, dismiss this packet.
+    return;
+  }
+  if(ntohl(ip->ip_dst) != local_ip){
+    kfree(buf); // Not our packet. Could this be a broadcast?
+    return;
+  }
+  struct udp* udp = (struct udp*)(ip+1);
+  uint16 port = ntohs(udp->dport);
+  struct sys_packets* upackets;
+  acquire(&netlock);
+  upackets = u_port[port];
+  if(upackets == 0)
+  {
+    release(&netlock);
+    kfree(buf);
+    return;
+  }
+  acquire(&upackets->recv_lock);
+  release(&netlock);
+  uint32 tail = upackets->tail;
+  if(upackets->packets[tail] != 0){
+    printf("Warning: Queue full in dst port %d, hence dropping packet\n",port);
+    release(&upackets->recv_lock);
+    kfree(buf);
+    return;
+  }
+  upackets->packets[tail] = buf;
+  upackets->tail = (tail + 1) % MAX_PKTS;
+  release(&upackets->recv_lock);
 }
 
 //
