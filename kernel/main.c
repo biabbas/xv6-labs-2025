@@ -45,7 +45,9 @@ main()
     while(atomic_read4((int *) &started) == 0)
       ;
     __sync_synchronize();
-    printf("hart %d starting\n", cpuid());
+    int cpu_id = cpuid();
+    printf("hart %d starting\n", cpu_id);
+    kinit_core(cpu_id);
     kvminithart();    // turn on paging
     trapinithart();   // install kernel trap vector
     plicinithart();   // ask PLIC for device interrupts

@@ -66,6 +66,7 @@ void            ireclaim(int);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+void            kinit_core(int cpu_id);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -95,6 +96,7 @@ void            proc_freepagetable(pagetable_t, uint64);
 int             kkill(int);
 int             killed(struct proc*);
 void            setkilled(struct proc*);
+int             cpuid(void);
 struct cpu*     mycpu(void);
 struct proc*    myproc();
 void            procinit(void);
