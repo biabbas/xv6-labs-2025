@@ -10,6 +10,7 @@
 #include "defs.h"
 
 void freerange(void *pa_start, void *pa_end);
+#define min(a, b) ((a) < (b) ? (a) : (b))
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
@@ -23,6 +24,8 @@ struct {
   struct run *freelist;
   int free;
 } kmem[NCPU];
+
+extern int ncpu_active;
 
 static char *kmem_lock_names[] = {
     "kmem_0",
@@ -104,7 +107,7 @@ memory_from_other_cpus(int cur_cpuid, int steal_num, int* stolen_count)
   // First pass: look for a CPU with enough pages.
   for(int pass = 0; pass < 2; pass++) {
 #endif
-    for(int i = 0; i < NCPU; i++) {
+    for(int i = 0; i < ncpu_active; i++) {
       if(i == cur_cpuid)
         continue;
 
@@ -117,6 +120,7 @@ memory_from_other_cpus(int cur_cpuid, int steal_num, int* stolen_count)
         release(&kmem[i].lock);
         continue;
       }
+      steal_num = min(steal_num, kmem[i].free/2);
 
       head = kmem[i].freelist;
       tail = head;
@@ -131,15 +135,14 @@ memory_from_other_cpus(int cur_cpuid, int steal_num, int* stolen_count)
       tail->next = 0;
 
       kmem[i].free -= stolen;
-      *stolen_count = stolen;
-
       release(&kmem[i].lock);
+      *stolen_count = stolen;
       return head;
     }
 #ifdef PASS2
   }
 #endif
-
+  *stolen_count = 0;
   return 0;
 }
 
@@ -154,10 +157,12 @@ kalloc(void)
   push_off();
   int cpu_id = cpuid();
   acquire(&kmem[cpu_id].lock);
+#define CPU_PAGE_STEALING_SIZE 256
+#if CPU_PAGE_STEALING_SIZE > 1
   if(kmem[cpu_id].freelist == 0){
     release(&kmem[cpu_id].lock);
     int stolen_count;
-    struct run* new_freelist = memory_from_other_cpus(cpu_id, 200, &stolen_count);
+    struct run* new_freelist = memory_from_other_cpus(cpu_id, CPU_PAGE_STEALING_SIZE, &stolen_count);
     acquire(&kmem[cpu_id].lock);
     if(kmem[cpu_id].freelist != 0)
       panic("Kalloc: Unexpected kmem updated even after pushoff\n");
@@ -170,6 +175,30 @@ kalloc(void)
     kmem[cpu_id].free--;
   }
   release(&kmem[cpu_id].lock);
+#else
+  r = kmem[cpu_id].freelist;
+  if(r){
+    kmem[cpu_id].freelist = r->next;
+    kmem[cpu_id].free--;
+  }
+  release(&kmem[cpu_id].lock); // Important to release lock before stealing to avoid race conditions.
+  if(r == 0){
+    for(int i = 0; i < ncpu_active; i++) {
+      if(i == cpu_id)
+        continue;
+
+      acquire(&kmem[i].lock);
+      if(kmem[i].freelist) {
+        r = kmem[i].freelist;
+        kmem[i].freelist = r->next;
+        kmem[i].free--;
+        release(&kmem[i].lock);
+        break;
+      }
+      release(&kmem[i].lock);
+    }
+  }
+#endif
   pop_off();
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
