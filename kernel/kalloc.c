@@ -42,15 +42,17 @@ kinit()
   kmem[0].free = 0;
   freerange(end, (void*)PHYSTOP);
 }
-struct run* memory_from_other_cpus(int cur_cpuid, int steal_num);
+struct run* memory_from_other_cpus(int cur_cpuid, int steal_num, int* stolen_count);
 void
 kinit_core(int cpu_id)
 {
-  printf("initialize core %d\n", cpu_id);
   initlock(&kmem[cpu_id].lock, kmem_lock_names[cpu_id]);
+  int stolen_count;
+  struct run* new_freelist= memory_from_other_cpus(cpu_id, 8182, &stolen_count);// 32731/4 (freerange)
+  printf("initialize core %d with %d pages freelist\n", cpu_id, stolen_count);
   acquire(&kmem[cpu_id].lock);
-  kmem[cpu_id].free = 0;
-  kmem[cpu_id].freelist = memory_from_other_cpus(cpu_id, 8182);// 32731/4 (freerange)
+  kmem[cpu_id].free = stolen_count;
+  kmem[cpu_id].freelist = new_freelist;
   release(&kmem[cpu_id].lock);
 }
 
@@ -93,7 +95,7 @@ kfree(void *pa)
 }
 
 struct run*
-memory_from_other_cpus(int cur_cpuid, int steal_num)
+memory_from_other_cpus(int cur_cpuid, int steal_num, int* stolen_count)
 {
   struct run *head, *tail;
   int stolen;
@@ -107,8 +109,11 @@ memory_from_other_cpus(int cur_cpuid, int steal_num)
         continue;
 
       acquire(&kmem[i].lock);
-      if(kmem[i].freelist == 0 ||
-         (pass == 0 && kmem[i].free < steal_num)) {
+      if(kmem[i].freelist == 0
+#ifdef PASS2
+        || (pass == 0 && kmem[i].free < steal_num)
+#endif
+      ) {
         release(&kmem[i].lock);
         continue;
       }
@@ -126,7 +131,7 @@ memory_from_other_cpus(int cur_cpuid, int steal_num)
       tail->next = 0;
 
       kmem[i].free -= stolen;
-      kmem[cur_cpuid].free += stolen;
+      *stolen_count = stolen;
 
       release(&kmem[i].lock);
       return head;
@@ -150,7 +155,14 @@ kalloc(void)
   int cpu_id = cpuid();
   acquire(&kmem[cpu_id].lock);
   if(kmem[cpu_id].freelist == 0){
-    kmem[cpu_id].freelist = memory_from_other_cpus(cpu_id, 200);
+    release(&kmem[cpu_id].lock);
+    int stolen_count;
+    struct run* new_freelist = memory_from_other_cpus(cpu_id, 200, &stolen_count);
+    acquire(&kmem[cpu_id].lock);
+    if(kmem[cpu_id].freelist != 0)
+      panic("Kalloc: Unexpected kmem updated even after pushoff\n");
+    kmem[cpu_id].freelist = new_freelist;
+    kmem[cpu_id].free += stolen_count;
   }
   r = kmem[cpu_id].freelist;
   if(r){
