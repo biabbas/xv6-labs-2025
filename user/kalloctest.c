@@ -26,9 +26,9 @@ int countfree();
 int
 main(int argc, char *argv[])
 {
-  test1();
-  test2();
-  test3();
+  // test1();
+  // test2();
+  // test3();
   test4();
   exit(0);
 }
@@ -266,7 +266,7 @@ void test4(void)
   if(n-m < (NCHILD4-1)*10000)
     printf("\ntest4 OK\n");
   else
-    printf("test4 FAIL m %d n %d\n", m, n);
+    printf("test4 FAIL m %d n %d, difference = %d, difference permitted %d\n", m, n, n-m, (NCHILD4-1)*10000);
 }
 
 

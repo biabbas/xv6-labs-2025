@@ -92,76 +92,21 @@ kfree(void *pa)
   pop_off();
 }
 
-// struct run*
-// memory_from_other_cpus(int cur_cpuid, int steal_num)
-// {
-//   struct run *head, *tail;
-//   int stolen;
-
-//   for(int i = 0; i < NCPU; i++) {
-//     if(i == cur_cpuid)
-//       continue;
-
-//     // Optimization only; state may change before lock acquisition.
-//     if(kmem[i].freelist == 0 || kmem[i].free == 0)
-//       continue;
-
-//     acquire(&kmem[i].lock);
-
-//     if(kmem[i].freelist == 0) {
-//       release(&kmem[i].lock);
-//       continue;
-//     }
-
-//     // Take the first page.
-//     head = kmem[i].freelist;
-//     tail = head;
-//     stolen = 1;
-
-//     // Extend the stolen list.
-//     while(stolen < steal_num && tail->next != 0) {
-//       tail = tail->next;
-//       stolen++;
-//     }
-
-//     // Remove the stolen pages from donor.
-//     kmem[i].freelist = tail->next;
-//     tail->next = 0;
-
-//     // Update accounting once.
-//     kmem[i].free -= stolen;
-//     kmem[cur_cpuid].free += stolen;
-
-//     release(&kmem[i].lock);
-
-//     return head;
-//   }
-
-//   return 0;
-// }
-
 struct run*
 memory_from_other_cpus(int cur_cpuid, int steal_num)
 {
   struct run *head, *tail;
   int stolen;
-
+#define PASS2
+#ifdef PASS2
   // First pass: look for a CPU with enough pages.
   for(int pass = 0; pass < 2; pass++) {
+#endif
     for(int i = 0; i < NCPU; i++) {
       if(i == cur_cpuid)
         continue;
 
-      // Optimization only; state may change before lock acquisition.
-      if(kmem[i].freelist == 0)
-        continue;
-
-      // Optimization only; state may change before lock acquisition.
-      if(pass == 0 && kmem[i].free < steal_num)
-        continue;
-
       acquire(&kmem[i].lock);
-
       if(kmem[i].freelist == 0 ||
          (pass == 0 && kmem[i].free < steal_num)) {
         release(&kmem[i].lock);
@@ -186,7 +131,9 @@ memory_from_other_cpus(int cur_cpuid, int steal_num)
       release(&kmem[i].lock);
       return head;
     }
+#ifdef PASS2
   }
+#endif
 
   return 0;
 }
@@ -203,15 +150,7 @@ kalloc(void)
   int cpu_id = cpuid();
   acquire(&kmem[cpu_id].lock);
   if(kmem[cpu_id].freelist == 0){
-    // int max = 0;
-    // for(int i=0;i<NCPU; i++){
-    //   if(kmem[i].free > max)
-    //     max = kmem[i].free;
-    // }
-    // if(max != 0)
-      kmem[cpu_id].freelist = memory_from_other_cpus(cpu_id, 500);
-    // else
-    //   printf("out of memory %d cpu\n", cpu_id);
+    kmem[cpu_id].freelist = memory_from_other_cpus(cpu_id, 200);
   }
   r = kmem[cpu_id].freelist;
   if(r){
