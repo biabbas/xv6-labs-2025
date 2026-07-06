@@ -25,10 +25,12 @@ struct {
   int free;
 } kmem[NCPU];
 
-#ifdef CPU_FREELIST_CACHE_LIMIT
-static int ncpu_active = 4;
-#else
 extern int ncpu_active;
+
+// #define CPU_FREELIST_CACHE_LIMIT 8192
+#ifdef CPU_FREELIST_CACHE_LIMIT
+// This variable is used to check if required cpu kmem freelist are initialized.
+static int kmem_list_nums = 0;
 #endif
 
 static char *kmem_lock_names[] = {
@@ -45,24 +47,20 @@ static char *kmem_lock_names[] = {
 void
 kinit()
 {
-#ifdef CPU_FREELIST_CACHE_LIMIT
-  for(int i=0;i<4;i++){
-    initlock(&kmem[i].lock, kmem_lock_names[i]);
-    kmem[i].free = 0;
-    kmem[i].freelist = 0;
-  }
-#else
   initlock(&kmem[0].lock, kmem_lock_names[0]);
   kmem[0].free = 0;
   kmem[0].freelist = 0;
-#endif
   freerange(end, (void*)PHYSTOP);
+#ifdef CPU_FREELIST_CACHE_LIMIT
+  __sync_add_and_fetch(&kmem_list_nums, 1);
+#endif
 }
+
 struct run* memory_from_other_cpus(int cur_cpuid, int steal_num, int* stolen_count);
+
 void
 kinit_core(int cpu_id)
 {
-#ifndef CPU_FREELIST_CACHE_LIMIT
   initlock(&kmem[cpu_id].lock, kmem_lock_names[cpu_id]);
   int stolen_count;
   struct run* new_freelist= memory_from_other_cpus(cpu_id, 8182, &stolen_count);// 32731/4 (freerange)
@@ -71,8 +69,8 @@ kinit_core(int cpu_id)
   kmem[cpu_id].free = stolen_count;
   kmem[cpu_id].freelist = new_freelist;
   release(&kmem[cpu_id].lock);
-#else
-  printf("initialize core %d with %d pages freelist\n", cpu_id, kmem[cpu_id].free);
+#ifdef CPU_FREELIST_CACHE_LIMIT
+  kmem_list_nums++;
 #endif
 }
 
@@ -108,18 +106,20 @@ kfree(void *pa)
   int cpu_id = cpuid();
   acquire(&kmem[cpu_id].lock);
 #ifdef CPU_FREELIST_CACHE_LIMIT
-  if(kmem[cpu_id].free > 8192 && ncpu_active == 4){ // Donate to other cpu's
+  int loss = 1;
+  if((kmem_list_nums == 4) && (kmem[cpu_id].free > CPU_FREELIST_CACHE_LIMIT)){ // Donate to other cpu's
     release(&kmem[cpu_id].lock);
     for(int i = 0; i < ncpu_active; i++) {
       int check_cpu = (cpu_id+1+i)%ncpu_active;
       acquire(&kmem[check_cpu].lock);
-      if(kmem[check_cpu].free > 8192 && check_cpu != cpu_id) {
+      if((kmem[check_cpu].free > CPU_FREELIST_CACHE_LIMIT) && (check_cpu != cpu_id)) { // If we roundup to original cpu id, add new list to this only.
         release(&kmem[check_cpu].lock);
         continue;
       }
       r->next = kmem[check_cpu].freelist;
       kmem[check_cpu].freelist = r;
       kmem[check_cpu].free++;
+      loss = 0;
       release(&kmem[check_cpu].lock);
       break;
     }
@@ -128,8 +128,11 @@ kfree(void *pa)
     r->next = kmem[cpu_id].freelist;
     kmem[cpu_id].freelist = r;
     kmem[cpu_id].free++;
+    loss = 0;
     release(&kmem[cpu_id].lock);
   }
+  if(loss)
+    panic("kfree: lost free memory");
 #else
   r->next = kmem[cpu_id].freelist;
   kmem[cpu_id].freelist = r;
@@ -225,9 +228,8 @@ kalloc(void)
   }
   release(&kmem[cpu_id].lock); // Important to release lock before stealing to avoid race conditions.
   if(r == 0){
-    for(int i = 0; i < ncpu_active; i++) {
-      if(i == cpu_id)
-        continue;
+    for(int j = 1; j < ncpu_active; j++) {
+      int i = (cpu_id+j)%ncpu_active;
 
       acquire(&kmem[i].lock);
       if(kmem[i].freelist) {
