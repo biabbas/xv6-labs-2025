@@ -124,7 +124,7 @@ void            pop_off(void);
 int             atomic_read4(int *addr);
 #ifdef LAB_LOCK
 void            freelock(struct spinlock*);
-void            initrwlock(struct rwspinlock*);
+void            initrwlock(struct rwspinlock*, char*);
 void            read_acquire(struct rwspinlock*);
 void            read_release(struct rwspinlock*);
 void            write_acquire(struct rwspinlock*);

@@ -124,29 +124,33 @@ release(struct spinlock *lk)
 static void
 read_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  acquire(&rwlk->l);
+  acquire(&rwlk->writer_lock);
+  __atomic_fetch_add(&rwlk->readers, 1, __ATOMIC_RELAXED);
+  release(&rwlk->writer_lock);
 }
 
 static void
 read_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  release(&rwlk->l);
+  __atomic_fetch_sub(&rwlk->readers, 1, __ATOMIC_RELAXED);
 }
 
 static void
 write_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  acquire(&rwlk->l);
+  acquire(&rwlk->writer_lock);
+  while(__atomic_load_n(&rwlk->readers, __ATOMIC_ACQUIRE) > 0)
+    ; // spin
+  if(__atomic_fetch_add(&rwlk->writers, 1, __ATOMIC_RELAXED) !=0)
+    panic("write_acquire_inner: multiple writers");
 }
 
 static void
 write_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  release(&rwlk->l);
+  if(__atomic_fetch_sub(&rwlk->writers, 1, __ATOMIC_RELAXED) != 1)
+    panic("write_release_inner: multiple writers");
+  release(&rwlk->writer_lock);
 }
 
 void
@@ -178,10 +182,11 @@ write_release(struct rwspinlock *rwlk)
 }
 
 void
-initrwlock(struct rwspinlock *rwlk)
+initrwlock(struct rwspinlock *rwlk, char* name)
 {
-  // Replace this with your implementation.
-  initlock(&rwlk->l, "rwlk");
+  __atomic_store_n(&rwlk->readers, 0, __ATOMIC_RELAXED);
+  __atomic_store_n(&rwlk->writers, 0, __ATOMIC_RELAXED);
+  initlock(&rwlk->writer_lock, name);
 }
 
 // Test rwspinlock implementation.
@@ -224,7 +229,7 @@ sys_rwlktest()
 
   static struct rwspinlock l;
   if (id == 0) {
-    initrwlock(&l);
+    initrwlock(&l, "rwspinlock_writer_lock");
   }
 
   rwspinlock_test_step(++step, "concurrent read_acquire");
@@ -344,7 +349,7 @@ sys_rwlktest()
   rwspinlock_test_step(++step, "acquiring multiple locks");
 
   struct rwspinlock l2;
-  initrwlock(&l2);
+  initrwlock(&l2, "rwspinlock_writer_lock");
   write_acquire(&l2);
   read_acquire(&l);
 
