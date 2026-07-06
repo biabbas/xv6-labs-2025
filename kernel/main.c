@@ -10,7 +10,7 @@ int ncpu_active = 0;
 void
 main()
 {
-  ncpu_active++;
+  __atomic_fetch_add(&ncpu_active,1, __ATOMIC_RELAXED);
   if(cpuid() == 0){
     consoleinit();
 #if defined(LAB_LOCK)
