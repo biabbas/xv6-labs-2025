@@ -25,7 +25,11 @@ struct {
   int free;
 } kmem[NCPU];
 
+#ifdef CPU_FREELIST_CACHE_LIMIT
+static int ncpu_active = 4;
+#else
 extern int ncpu_active;
+#endif
 
 static char *kmem_lock_names[] = {
     "kmem_0",
@@ -41,14 +45,24 @@ static char *kmem_lock_names[] = {
 void
 kinit()
 {
+#ifdef CPU_FREELIST_CACHE_LIMIT
+  for(int i=0;i<4;i++){
+    initlock(&kmem[i].lock, kmem_lock_names[i]);
+    kmem[i].free = 0;
+    kmem[i].freelist = 0;
+  }
+#else
   initlock(&kmem[0].lock, kmem_lock_names[0]);
   kmem[0].free = 0;
+  kmem[0].freelist = 0;
+#endif
   freerange(end, (void*)PHYSTOP);
 }
 struct run* memory_from_other_cpus(int cur_cpuid, int steal_num, int* stolen_count);
 void
 kinit_core(int cpu_id)
 {
+#ifndef CPU_FREELIST_CACHE_LIMIT
   initlock(&kmem[cpu_id].lock, kmem_lock_names[cpu_id]);
   int stolen_count;
   struct run* new_freelist= memory_from_other_cpus(cpu_id, 8182, &stolen_count);// 32731/4 (freerange)
@@ -57,6 +71,9 @@ kinit_core(int cpu_id)
   kmem[cpu_id].free = stolen_count;
   kmem[cpu_id].freelist = new_freelist;
   release(&kmem[cpu_id].lock);
+#else
+  printf("initialize core %d with %d pages freelist\n", cpu_id, kmem[cpu_id].free);
+#endif
 }
 
 void
@@ -90,10 +107,35 @@ kfree(void *pa)
   push_off();
   int cpu_id = cpuid();
   acquire(&kmem[cpu_id].lock);
+#ifdef CPU_FREELIST_CACHE_LIMIT
+  if(kmem[cpu_id].free > 8192 && ncpu_active == 4){ // Donate to other cpu's
+    release(&kmem[cpu_id].lock);
+    for(int i = 0; i < ncpu_active; i++) {
+      int check_cpu = (cpu_id+1+i)%ncpu_active;
+      acquire(&kmem[check_cpu].lock);
+      if(kmem[check_cpu].free > 8192 && check_cpu != cpu_id) {
+        release(&kmem[check_cpu].lock);
+        continue;
+      }
+      r->next = kmem[check_cpu].freelist;
+      kmem[check_cpu].freelist = r;
+      kmem[check_cpu].free++;
+      release(&kmem[check_cpu].lock);
+      break;
+    }
+  }
+  else{
+    r->next = kmem[cpu_id].freelist;
+    kmem[cpu_id].freelist = r;
+    kmem[cpu_id].free++;
+    release(&kmem[cpu_id].lock);
+  }
+#else
   r->next = kmem[cpu_id].freelist;
   kmem[cpu_id].freelist = r;
   kmem[cpu_id].free++;
   release(&kmem[cpu_id].lock);
+#endif
   pop_off();
 }
 
