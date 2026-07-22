@@ -169,6 +169,54 @@ bad:
   return -1;
 }
 
+uint64
+sys_symlink(void)
+{
+  char target_path[MAXPATH];
+  char link_path[MAXPATH];
+  char symlinkName[DIRSIZ];
+  int target_str_length;
+// TODO: Check what happens if path len is maxpath.
+  if(((target_str_length = argstr(0, target_path, MAXPATH)) == -1) || (argstr(1, link_path, MAXPATH) == -1))
+    return -1;
+  target_str_length = (target_str_length > MAXPATH)? MAXPATH : target_str_length+1;
+  target_path[target_str_length-1] = 0;
+  struct inode* ip, *new_ip;
+  uint poff=0;
+  begin_op();
+  if((ip=nameiparent(link_path,symlinkName)) == 0){
+    end_op();
+    return -1;
+  }
+  ilock(ip);
+  if((dirlookup(ip, symlinkName, &poff))!=0)
+    goto fail;
+  if((new_ip=ialloc(ip->dev, T_SYMLINK))== 0)
+    goto fail;
+  // No need to set new_ip->minor or new_ip->major.
+  ilock(new_ip);
+  new_ip->nlink = 1;
+  iupdate(new_ip);
+  if(dirlink(ip, symlinkName, new_ip->inum)!=0){
+    new_ip->nlink = 0;
+    iupdate(new_ip);
+    iunlockput(new_ip);
+    goto fail;
+  }
+  if(writei(new_ip, 0, (uint64)target_path, 0, target_str_length) != target_str_length){
+    iunlockput(new_ip);
+    goto fail;
+  }
+  iunlockput(ip);
+  iunlockput(new_ip);
+  end_op();
+  return 0;
+fail:
+  iunlockput(ip);
+  end_op();
+  return -1;
+}
+
 // Is the directory dp empty except for "." and ".." ?
 static int
 isdirempty(struct inode *dp)
@@ -328,6 +376,34 @@ sys_open(void)
       return -1;
     }
     ilock(ip);
+    if((ip->type == T_SYMLINK) && !(omode & O_NOFOLLOW)){
+      int symlink_loop_jumps = 10;
+      while((symlink_loop_jumps-- > 0) && (ip->type == T_SYMLINK)){
+        if(readi(ip, 0, (uint64)path, 0, MAXPATH) < 0){
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        iunlockput(ip);
+        if((ip = namei(path)) == 0){
+          end_op();
+          return -1;
+        }
+        ilock(ip);
+      }
+      if(ip->type == T_SYMLINK){
+        // printf("Too many levels of symbolic links\n");
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+    }
+    else if((ip->type == T_SYMLINK) && ((omode & O_WRONLY) || (omode & O_RDWR))){
+      printf("Cannot open symlink %s in write mode, requested 0x%x\n", path, omode);// Extra check
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();

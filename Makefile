@@ -261,6 +261,7 @@ endif
 
 ifeq ($(LAB),fs)
 UPROGS += \
+	$U/_symlinktest\
 	$U/_bigfile
 endif
 
