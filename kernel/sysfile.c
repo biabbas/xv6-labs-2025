@@ -503,3 +503,47 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  size_t length;
+  off_t offset;
+  int prot, flags;
+  struct file* f;
+  argaddr(0, &addr);
+  argaddr(1, &length);
+  argint(2, &prot);
+  argint(3, &flags);
+  if(argfd(4, 0, &f) < 0)
+    return -1;
+  argaddr(5, (unsigned long*)&offset);
+  struct proc* p = myproc();
+  if(addr == 0)
+    addr = p->sz+PGSIZE*10;
+  length = PGROUNDUP(length);
+  int base = 0;
+  int protection = ((prot&PROT_READ)? PTE_R:0) | ((prot&PROT_EXEC)? PTE_X:0) | ((prot&PROT_WRITE)?PTE_W:0);
+  uint64 some_pa=0xbad;
+  while(mappages(p->pagetable, addr+base, length, some_pa, protection)){
+    uvmunmap(p->pagetable, addr+base, length/PGSIZE, 0);
+    base+=PGSIZE;
+    if(base > 20*PGSIZE)
+    {
+      return -1;
+    }
+  }
+  printf("mmap successful, %p, addr = %p\n", (void*)(addr+base), (void*)addr);
+  return addr+base;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  size_t length;
+  argaddr(0, &addr);
+  argaddr(1, &length);
+  return -1;
+}
