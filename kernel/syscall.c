@@ -104,6 +104,12 @@ extern uint64 sys_close(void);
 extern uint64 sys_mmap(void);
 extern uint64 sys_munmap(void);
 
+uint64 sys_pgtbl_print(void)
+{
+  vmprint(myproc()->pagetable);
+  return 0;
+}
+
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
 static uint64 (*syscalls[])(void) = {
@@ -130,6 +136,7 @@ static uint64 (*syscalls[])(void) = {
 [SYS_close]   sys_close,
 [SYS_mmap]    sys_mmap,
 [SYS_munmap]  sys_munmap,
+[SYS_pgtbl_print] sys_pgtbl_print,
 };
 
 void

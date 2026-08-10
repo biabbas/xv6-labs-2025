@@ -1,7 +1,3 @@
-#ifdef LAB_MMAP
-typedef unsigned long size_t;
-typedef long int off_t;
-#endif
 struct buf;
 struct context;
 struct file;
@@ -40,6 +36,8 @@ void            fileinit(void);
 int             fileread(struct file*, uint64, int n);
 int             filestat(struct file*, uint64 addr);
 int             filewrite(struct file*, uint64, int n);
+
+uint64 mmap_fault(pagetable_t pagetable, uint64 va, int read, pte_t* pte);
 
 // fs.c
 void            fsinit(int);
@@ -186,9 +184,7 @@ int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ismapped(pagetable_t, uint64);
 uint64          vmfault(pagetable_t, uint64, int);
-#if defined(LAB_PGTBL) || defined(SOL_MMAP)
 void            vmprint(pagetable_t);
-#endif
 #ifdef LAB_PGTBL
 pte_t*          pgpte(pagetable_t, uint64);
 #endif

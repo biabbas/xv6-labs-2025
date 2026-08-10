@@ -137,6 +137,30 @@ walkaddr(pagetable_t pagetable, uint64 va)
   return pa;
 }
 
+char* padding[] = {".. .. ..", ".. ..",".." };
+void print_page(pagetable_t pagetable, int level, uint64 va_p)
+{
+  if(level < 0)
+    panic("print_page: leaf has pte");
+  for(int i=0;i<512;i++)
+  {
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V)==0)
+      continue;
+    uint64 pa = PTE2PA(pte);
+    uint64 va = va_p | ((uint64)i<<(12+9*(level)));
+    printf(" %s%p: pte %p pa %p\n", padding[level], (void*)va, (void*)pte, (void*)pa);
+    if((pte & (PTE_R | PTE_W | PTE_X))==0)
+      print_page((pagetable_t)pa, level-1, va);
+  }
+}
+
+void
+vmprint(pagetable_t pagetable) {
+  printf("page table %p\n", pagetable);
+  print_page(pagetable, 2, 0);
+}
+
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa.
 // va and size MUST be page-aligned.
@@ -446,7 +470,7 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 }
 
 // allocate and map user memory if process is referencing a page
-// that was lazily allocated in sys_sbrk().
+// that was lazily allocated in sys_sbrk() or mmapped.
 // returns 0 if va is invalid or already mapped, or if
 // out of physical memory, and physical address if successful.
 uint64
@@ -454,11 +478,13 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
 {
   uint64 mem;
   struct proc *p = myproc();
-
+  pte_t *pte = walk(pagetable, va, 0);
+  if((pte!=0) && (*pte & PTE_M))
+    return mmap_fault(pagetable, va, read, pte);
   if (va >= p->sz)
     return 0;
   va = PGROUNDDOWN(va);
-  if(ismapped(pagetable, va)) {
+  if((pte != 0) && (*pte & PTE_V)) {
     return 0;
   }
   mem = (uint64) kalloc();

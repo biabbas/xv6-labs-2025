@@ -22,3 +22,4 @@
 #define SYS_close  21
 #define SYS_mmap   22
 #define SYS_munmap  23
+#define SYS_pgtbl_print 24

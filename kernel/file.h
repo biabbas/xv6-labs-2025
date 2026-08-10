@@ -38,3 +38,11 @@ struct devsw {
 extern struct devsw devsw[];
 
 #define CONSOLE 1
+
+struct mmap_struct{
+  struct file* f;
+  uint64 va;
+  off_t file_offset;
+};
+
+#define MMAP_LIMIT 20

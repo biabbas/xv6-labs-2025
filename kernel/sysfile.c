@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -504,6 +505,79 @@ sys_pipe(void)
   return 0;
 }
 
+uint64 find_va(int length, pagetable_t p_tbl, uint64 pmapped)
+{
+  uint64 init = TRAPFRAME;
+  int found_length = 0;
+  while(found_length < length)
+  {
+    init-=PGSIZE;
+    printf("check va %p\n", (void*)init);
+    if(ismapped(p_tbl, init)) {
+      found_length = 0;
+    }
+    else{
+      found_length+=PGSIZE;
+    }
+    if(init < pmapped)
+      return -1;
+  }
+  return init;
+}
+
+struct mmap_struct mmap_v[MMAP_LIMIT];
+
+struct mmap_struct* find_mmap(uint64 va){
+  for(int i=0;i<MMAP_LIMIT;i++){
+    if(mmap_v[i].va == va)
+      return &mmap_v[i];
+  }
+  return (void*)(uint64)-1;
+}
+uint64 store_mmap(struct file* f, uint64 va, off_t f_off)
+{
+  for(int i=0;i<MMAP_LIMIT;i++){
+    if(mmap_v[i].va == 0) {
+      mmap_v[i].f = filedup(f);
+      mmap_v[i].va = va;
+      mmap_v[i].file_offset = f_off;
+      // mmap_v[i].prot = prot;
+      return i<<12;
+    }
+  }
+  return -1;
+}
+
+// Create PTEs for virtual addresses starting at va that refer to
+// physical addresses to pa
+// va and size MUST be page-aligned.
+// Returns 0 on success, -1 if walk() or store_mmap couldn't
+// allocate required memory
+static int
+mappages_fixed_pa(pagetable_t pagetable, uint64 va, uint64 size, int perm, struct file* f, off_t offset)
+{
+  uint64 a, last;
+  pte_t *pte;
+  uint64 pa;
+  off_t file_off = offset;
+  a = va;
+  last = va + size - PGSIZE;
+  for(;;){
+    if((pa = store_mmap(f, a, file_off))==-1)
+      return -1;
+    if((pte = walk(pagetable, a, 1)) == 0)
+      return -1;
+    if(*pte & PTE_V)
+      panic("mappages: remap");
+    *pte = PA2PTE(pa) | perm | PTE_V | PTE_M;
+    if(a == last)
+      break;
+    a += PGSIZE;
+    file_off += PGSIZE;
+  }
+  return 0;
+}
+
 uint64
 sys_mmap(void)
 {
@@ -514,28 +588,40 @@ sys_mmap(void)
   struct file* f;
   argaddr(0, &addr);
   argaddr(1, &length);
+  if(length <= 0)
+    return -1;
   argint(2, &prot);
   argint(3, &flags);
-  if(argfd(4, 0, &f) < 0)
+  if(argfd(4, 0, &f) < 0){
+    printf("mmap: file associated with fd not found\n");
     return -1;
+  }
   argaddr(5, (unsigned long*)&offset);
+  if((addr | offset | length) & 0xfff){
+    printf("mmap: page offset or addr not aligned\n");
+    return -1;
+  }
   struct proc* p = myproc();
   if(addr == 0)
-    addr = p->sz+PGSIZE*10;
-  length = PGROUNDUP(length);
-  int base = 0;
-  int protection = ((prot&PROT_READ)? PTE_R:0) | ((prot&PROT_EXEC)? PTE_X:0) | ((prot&PROT_WRITE)?PTE_W:0);
-  uint64 some_pa=0xbad;
-  while(mappages(p->pagetable, addr+base, length, some_pa, protection)){
-    uvmunmap(p->pagetable, addr+base, length/PGSIZE, 0);
-    base+=PGSIZE;
-    if(base > 20*PGSIZE)
-    {
+    if((addr = find_va(length, p->pagetable, p->sz)) == -1){
+      printf("mmap: Failed to adjust virtual address\n");
       return -1;
     }
+  if(!f->writable)
+    if((prot&PROT_WRITE) && (flags & MAP_SHARED)){
+      printf("mmap: opening a readonly file with write permission not allowed\n");
+      return -1;
+    }
+  int perms = ((prot&PROT_READ)? PTE_R:0) | ((prot&PROT_EXEC)? PTE_X:0) | ((prot&PROT_WRITE)?PTE_W:0);
+
+  if(mappages_fixed_pa(p->pagetable, addr, length, perms, f, offset) != 0){
+    uvmunmap(p->pagetable, addr, length/PGSIZE, 0); // unmap any allocated pages
+    printf("mmap: Failed to map pages\n");
+    return -1;
   }
-  printf("mmap successful, %p, addr = %p\n", (void*)(addr+base), (void*)addr);
-  return addr+base;
+  printf("mmap successful addr = %p\n",(void*)addr);
+
+  return addr;
 }
 
 uint64
@@ -545,5 +631,56 @@ sys_munmap(void)
   size_t length;
   argaddr(0, &addr);
   argaddr(1, &length);
-  return -1;
+  if((length | addr ) & 0xfff)
+    return -1;
+  
+  uint64 va;
+  pte_t* pte;
+  struct mmap_struct* mentry;
+
+  uint64 page;
+  va = addr;
+  for(int n=length/PGSIZE;n>0; n--) {
+    pte = walk(myproc()->pagetable, va, 0);
+    if((pte == 0) || !(*pte & PTE_M)){
+      printf("munmap: trying to unmap other memory regions\n");
+      return -1;
+    }
+    mentry = find_mmap(va);
+    if((uint64)mentry == -1){
+      printf("munmap: did not find mmap entry for some reason\n");
+      return -1;
+    }
+    page = PTE2PA(*pte);
+
+    printf("unmapped %p, %p\n", (void*)va, (void*)page);
+    if(*pte & PTE_U)
+      kfree((void*)page);
+    *pte = 0;
+    fileclose(mentry->f);
+    memset(mentry, 0, sizeof(struct mmap_struct));
+    va+=PGSIZE;
+  }
+  return 0;
+}
+
+// Allocate mmapped page if valid.
+// If mapped page is already 
+uint64
+mmap_fault(pagetable_t pagetable, uint64 va, int read, pte_t* pte)
+{
+  struct mmap_struct* mv =  &mmap_v[(PTE2PA(*pte))>>12];
+  struct file* f = mv->f;
+  printf("provided va = %p, provided pte = %p, mv = %p\n", (void*)va, pte, mv );
+  printf("mmap fault, file offset = %p, addr = %p\n", (void*)mv->file_offset, (void*)mv->va);
+  void* page = kalloc();
+  if(page == 0)
+    panic("mmap kalloc: out of pages");
+  ilock(f->ip);
+  int read_size = readi(f->ip, 0, (uint64)page, mv->file_offset, PGSIZE);
+  iunlock(f->ip);
+  memset(page+read_size, 0, PGSIZE-read_size);
+  *pte = PTE_FLAGS(*pte) | PTE_U | PA2PTE(page);
+  // vmprint(pagetable);
+  return (uint64)page;
 }

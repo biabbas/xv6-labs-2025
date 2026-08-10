@@ -46,6 +46,7 @@ int cpupin(int);
 #endif
 void* mmap(void* addr, size_t length, int prot, int flags, int fd, off_t offset);
 int munmap(void* addr, size_t length);
+void pgtbl_print(void);
 
 // ulib.c
 int stat(const char*, struct stat*);
