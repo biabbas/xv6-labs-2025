@@ -480,7 +480,7 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   struct proc *p = myproc();
   pte_t *pte = walk(pagetable, va, 0);
   if((pte!=0) && (*pte & PTE_M))
-    return mmap_fault(pagetable, va, read, pte);
+    return mmap_fault(pagetable, va, read, pte, p->mmap_list);
   if (va >= p->sz)
     return 0;
   va = PGROUNDDOWN(va);

@@ -525,51 +525,107 @@ uint64 find_va(int length, pagetable_t p_tbl, uint64 pmapped)
   return init;
 }
 
-struct mmap_struct mmap_v[MMAP_LIMIT];
+struct mmap_struct* freelist = 0;
+void free_mmap(struct mmap_struct* mapping)
+{
+  if(freelist == 0){
+    mapping->next = mapping;
+    mapping->prev = mapping;
+    freelist = mapping;
+  }
+  else{
+    mapping->next = freelist;
+    freelist->prev->next = mapping;
+    mapping->prev = freelist->prev;
+    freelist->prev = mapping;
+  }
+}
 
-struct mmap_struct* find_mmap(uint64 va){
-  for(int i=0;i<MMAP_LIMIT;i++){
-    if(mmap_v[i].va == va)
-      return &mmap_v[i];
+struct mmap_struct* get_mapping()
+{
+  struct mmap_struct* new_mapping;
+  if(freelist == 0){
+    new_mapping = kalloc();
+    if(new_mapping == 0)
+      panic("mmap: kalloc out of memory");
+    for(int i=1;i<PGSIZE/sizeof(struct mmap_struct); i++){
+      free_mmap(&new_mapping[i]);
+    }
+    return new_mapping;
+  }
+  else{
+    if(freelist->next == freelist){
+      if(freelist->prev != freelist)
+        panic("mmap: getmapping doubly list not in assumed state");
+      new_mapping = freelist;
+      freelist = 0;
+      return new_mapping;
+    }
+    else{
+      new_mapping = freelist->prev;
+      new_mapping->prev->next = freelist;
+      freelist->prev = new_mapping->prev;
+      new_mapping->prev = new_mapping->next = 0;
+      return new_mapping;
+    }
+  }
+}
+
+struct mmap_struct* find_mmap(uint64 va, struct mmap_struct* mmap_v){
+  struct mmap_struct* node = mmap_v;
+  while(node != 0){
+    if(node->va == va)
+      return node;
+    if(node->next == mmap_v)
+      break;
+    else
+      node = node->next;
   }
   return (void*)(uint64)-1;
 }
-uint64 store_mmap(struct file* f, uint64 va, off_t f_off)
+
+void store_mmap(struct file* f, uint64 va, off_t f_off, void** mmapv_ptr)
 {
-  for(int i=0;i<MMAP_LIMIT;i++){
-    if(mmap_v[i].va == 0) {
-      mmap_v[i].f = filedup(f);
-      mmap_v[i].va = va;
-      mmap_v[i].file_offset = f_off;
-      // mmap_v[i].prot = prot;
-      return i<<12;
-    }
+  struct mmap_struct* mmap_v = get_mapping();
+  struct mmap_struct* list;
+  mmap_v->va = va;
+  mmap_v->f_ip = idup(f->ip);
+  mmap_v->file_offset = f_off;
+  if(*mmapv_ptr == 0)
+  {
+    mmap_v->next = mmap_v;
+    mmap_v->prev = mmap_v;
+    *mmapv_ptr = mmap_v;
   }
-  return -1;
+  else {
+    list = *mmapv_ptr;
+    list->prev->next = mmap_v;
+    mmap_v->next =list;
+    mmap_v->prev = list->prev;
+    list->prev = mmap_v; 
+  }
 }
 
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses to pa
 // va and size MUST be page-aligned.
-// Returns 0 on success, -1 if walk() or store_mmap couldn't
+// Returns 0 on success, -1 if walk()
 // allocate required memory
 static int
-mappages_fixed_pa(pagetable_t pagetable, uint64 va, uint64 size, int perm, struct file* f, off_t offset)
+mappages_fixed_pa(pagetable_t pagetable, uint64 va, uint64 size, int perm, struct file* f, off_t offset, void ** mmap_list)
 {
   uint64 a, last;
   pte_t *pte;
-  uint64 pa;
   off_t file_off = offset;
   a = va;
   last = va + size - PGSIZE;
   for(;;){
-    if((pa = store_mmap(f, a, file_off))==-1)
-      return -1;
+    store_mmap(f, a, file_off, mmap_list);
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
     if(*pte & PTE_V)
       panic("mappages: remap");
-    *pte = PA2PTE(pa) | perm | PTE_V | PTE_M;
+    *pte = perm | PTE_V | PTE_M;
     if(a == last)
       break;
     a += PGSIZE;
@@ -614,7 +670,7 @@ sys_mmap(void)
     }
   int perms = ((prot&PROT_READ)? PTE_R:0) | ((prot&PROT_EXEC)? PTE_X:0) | ((prot&PROT_WRITE)?PTE_W:0);
 
-  if(mappages_fixed_pa(p->pagetable, addr, length, perms, f, offset) != 0){
+  if(mappages_fixed_pa(p->pagetable, addr, length, perms, f, offset, &p->mmap_list) != 0){
     uvmunmap(p->pagetable, addr, length/PGSIZE, 0); // unmap any allocated pages
     printf("mmap: Failed to map pages\n");
     return -1;
@@ -622,6 +678,18 @@ sys_mmap(void)
   printf("mmap successful addr = %p\n",(void*)addr);
 
   return addr;
+}
+
+struct mmap_struct* remove_from_list(struct mmap_struct* mentry, void** mmap_list){
+  mentry->prev->next = mentry->next;
+  mentry->next->prev = mentry->prev;
+  if(mentry->next == mentry){
+    *mmap_list = 0;
+  }
+  else if(*mmap_list == mentry)
+    *mmap_list = mentry->next;
+  mentry->next = mentry->prev = 0;
+  return mentry;
 }
 
 uint64
@@ -633,32 +701,33 @@ sys_munmap(void)
   argaddr(1, &length);
   if((length | addr ) & 0xfff)
     return -1;
-  
+
   uint64 va;
   pte_t* pte;
   struct mmap_struct* mentry;
-
+  struct proc* p = myproc();
   uint64 page;
   va = addr;
   for(int n=length/PGSIZE;n>0; n--) {
-    pte = walk(myproc()->pagetable, va, 0);
+    pte = walk(p->pagetable, va, 0);
     if((pte == 0) || !(*pte & PTE_M)){
       printf("munmap: trying to unmap other memory regions\n");
       return -1;
     }
-    mentry = find_mmap(va);
+    mentry = find_mmap(va, p->mmap_list);
     if((uint64)mentry == -1){
-      printf("munmap: did not find mmap entry for some reason\n");
+      printf("munmap: did not find mmap entry for some reason, va = %p\n", (void*)va);
       return -1;
     }
-    page = PTE2PA(*pte);
 
-    printf("unmapped %p, %p\n", (void*)va, (void*)page);
-    if(*pte & PTE_U)
+    if(*pte & PTE_U){
+      page = PTE2PA(*pte);
       kfree((void*)page);
+    }
+    printf("unmapped %p\n", (void*)va);
     *pte = 0;
-    fileclose(mentry->f);
-    memset(mentry, 0, sizeof(struct mmap_struct));
+    iput(mentry->f_ip);
+    free_mmap(remove_from_list(mentry, &p->mmap_list));
     va+=PGSIZE;
   }
   return 0;
@@ -667,18 +736,18 @@ sys_munmap(void)
 // Allocate mmapped page if valid.
 // If mapped page is already 
 uint64
-mmap_fault(pagetable_t pagetable, uint64 va, int read, pte_t* pte)
+mmap_fault(pagetable_t pagetable, uint64 va, int read, pte_t* pte, void* mmap_v)
 {
-  struct mmap_struct* mv =  &mmap_v[(PTE2PA(*pte))>>12];
-  struct file* f = mv->f;
+  struct mmap_struct* mv =  find_mmap(va, mmap_v);
+  struct inode* f_ip = mv->f_ip;
   printf("provided va = %p, provided pte = %p, mv = %p\n", (void*)va, pte, mv );
   printf("mmap fault, file offset = %p, addr = %p\n", (void*)mv->file_offset, (void*)mv->va);
   void* page = kalloc();
   if(page == 0)
     panic("mmap kalloc: out of pages");
-  ilock(f->ip);
-  int read_size = readi(f->ip, 0, (uint64)page, mv->file_offset, PGSIZE);
-  iunlock(f->ip);
+  ilock(f_ip);
+  int read_size = readi(f_ip, 0, (uint64)page, mv->file_offset, PGSIZE);
+  iunlock(f_ip);
   memset(page+read_size, 0, PGSIZE-read_size);
   *pte = PTE_FLAGS(*pte) | PTE_U | PA2PTE(page);
   // vmprint(pagetable);
