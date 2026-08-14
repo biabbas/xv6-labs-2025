@@ -478,13 +478,10 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
 {
   uint64 mem;
   struct proc *p = myproc();
-  pte_t *pte = walk(pagetable, va, 0);
-  if((pte!=0) && (*pte & PTE_M))
-    return mmap_fault(pagetable, va, read, pte, p->mmap_list);
   if (va >= p->sz)
-    return 0;
+    return mmap_fault(pagetable, va, read, p->mmap_list);
   va = PGROUNDDOWN(va);
-  if((pte != 0) && (*pte & PTE_V)) {
+  if(ismapped(pagetable, va)) {
     return 0;
   }
   mem = (uint64) kalloc();

@@ -551,7 +551,6 @@ struct mmap_struct* get_mapping()
     for(int i=1;i<PGSIZE/sizeof(struct mmap_struct); i++){
       free_mmap(&new_mapping[i]);
     }
-    return new_mapping;
   }
   else{
     if(freelist->next == freelist){
@@ -559,22 +558,23 @@ struct mmap_struct* get_mapping()
         panic("mmap: getmapping doubly list not in assumed state");
       new_mapping = freelist;
       freelist = 0;
-      return new_mapping;
     }
     else{
       new_mapping = freelist->prev;
       new_mapping->prev->next = freelist;
       freelist->prev = new_mapping->prev;
       new_mapping->prev = new_mapping->next = 0;
-      return new_mapping;
     }
   }
+  return new_mapping;
 }
 
+// For a va, return mmap struct if va is within the struct's range
+// -1 if vma does not exist.
 struct mmap_struct* find_mmap(uint64 va, struct mmap_struct* mmap_v){
   struct mmap_struct* node = mmap_v;
   while(node != 0){
-    if(node->va == va)
+    if(va - node->start_va < node->length)
       return node;
     if(node->next == mmap_v)
       break;
@@ -584,13 +584,17 @@ struct mmap_struct* find_mmap(uint64 va, struct mmap_struct* mmap_v){
   return (void*)(uint64)-1;
 }
 
-void store_mmap(struct file* f, uint64 va, off_t f_off, void** mmapv_ptr)
+// Todo: add code to check if vma already exists.
+void store_mmap(struct inode* ip, uint64 va, off_t f_off, int length, void** mmapv_ptr, int flags, int perms)
 {
   struct mmap_struct* mmap_v = get_mapping();
   struct mmap_struct* list;
-  mmap_v->va = va;
-  mmap_v->f_ip = idup(f->ip);
+  mmap_v->start_va = va;
+  mmap_v->length = length;
+  mmap_v->f_ip = idup(ip);
   mmap_v->file_offset = f_off;
+  mmap_v->flags = flags;
+  mmap_v->prot = perms;
   if(*mmapv_ptr == 0)
   {
     mmap_v->next = mmap_v;
@@ -604,34 +608,6 @@ void store_mmap(struct file* f, uint64 va, off_t f_off, void** mmapv_ptr)
     mmap_v->prev = list->prev;
     list->prev = mmap_v; 
   }
-}
-
-// Create PTEs for virtual addresses starting at va that refer to
-// physical addresses to pa
-// va and size MUST be page-aligned.
-// Returns 0 on success, -1 if walk()
-// allocate required memory
-static int
-mappages_fixed_pa(pagetable_t pagetable, uint64 va, uint64 size, int perm, struct file* f, off_t offset, void ** mmap_list)
-{
-  uint64 a, last;
-  pte_t *pte;
-  off_t file_off = offset;
-  a = va;
-  last = va + size - PGSIZE;
-  for(;;){
-    store_mmap(f, a, file_off, mmap_list);
-    if((pte = walk(pagetable, a, 1)) == 0)
-      return -1;
-    if(*pte & PTE_V)
-      panic("mappages: remap");
-    *pte = perm | PTE_V | PTE_M;
-    if(a == last)
-      break;
-    a += PGSIZE;
-    file_off += PGSIZE;
-  }
-  return 0;
 }
 
 uint64
@@ -670,11 +646,8 @@ sys_mmap(void)
     }
   int perms = ((prot&PROT_READ)? PTE_R:0) | ((prot&PROT_EXEC)? PTE_X:0) | ((prot&PROT_WRITE)?PTE_W:0);
 
-  if(mappages_fixed_pa(p->pagetable, addr, length, perms, f, offset, &p->mmap_list) != 0){
-    uvmunmap(p->pagetable, addr, length/PGSIZE, 0); // unmap any allocated pages
-    printf("mmap: Failed to map pages\n");
-    return -1;
-  }
+  store_mmap(f->ip, addr, offset, length, &p->mmap_list, flags, perms);
+
   printf("mmap successful addr = %p\n",(void*)addr);
 
   return addr;
@@ -692,64 +665,106 @@ struct mmap_struct* remove_from_list(struct mmap_struct* mentry, void** mmap_lis
   return mentry;
 }
 
+void
+unmap_vma_and_free_struct(struct mmap_struct* mentry, pagetable_t pagetable, int free)
+{
+  pte_t* pte;
+  uint64 page;
+  while(mentry->length > 0){
+    printf("unmapping %p\n", (void*)mentry->start_va);
+    pte = walk(pagetable, mentry->start_va, 0);
+    if((*pte != 0) && (*pte & PTE_V)){
+      page = PTE2PA(*pte);
+      kfree((void*)page);
+    }
+    mentry->start_va+=PGSIZE;
+    mentry->length-=PGSIZE;
+  }
+  if(free){
+    iput(mentry->f_ip);
+    free_mmap(mentry);
+  }
+}
+
 uint64
 sys_munmap(void)
 {
   uint64 addr;
-  size_t length;
+  size_t size;
   argaddr(0, &addr);
-  argaddr(1, &length);
-  if((length | addr ) & 0xfff)
+  argaddr(1, &size);
+  if((size | addr ) & 0xfff)
     return -1;
 
+  printf("unmap %p, to %p\n", (void*)addr, (void*)(addr+size));
   uint64 va;
-  pte_t* pte;
+  uint64 length;
   struct mmap_struct* mentry;
   struct proc* p = myproc();
-  uint64 page;
   va = addr;
-  for(int n=length/PGSIZE;n>0; n--) {
-    pte = walk(p->pagetable, va, 0);
-    if((pte == 0) || !(*pte & PTE_M)){
-      printf("munmap: trying to unmap other memory regions\n");
-      return -1;
-    }
+  length = size;
+
+  while(length > 0){
     mentry = find_mmap(va, p->mmap_list);
     if((uint64)mentry == -1){
-      printf("munmap: did not find mmap entry for some reason, va = %p\n", (void*)va);
+      printf("unmapping other vma not allowed\n");
       return -1;
     }
-
-    if(*pte & PTE_U){
-      page = PTE2PA(*pte);
-      kfree((void*)page);
+    if(mentry->start_va == addr)
+    {
+      remove_from_list(mentry, &p->mmap_list);
+      if(mentry->length > length){
+        store_mmap(mentry->f_ip, mentry->start_va+length, mentry->file_offset+length, mentry->length-length, &p->mmap_list, mentry->flags, mentry->prot);
+        mentry->length = length;
+      }
+      length-=mentry->length;
+      va+=mentry->length;
+      unmap_vma_and_free_struct(mentry, p->pagetable, 1);
     }
-    printf("unmapped %p\n", (void*)va);
-    *pte = 0;
-    iput(mentry->f_ip);
-    free_mmap(remove_from_list(mentry, &p->mmap_list));
-    va+=PGSIZE;
+    else
+    { // Address to be unmapped starts within this mentry.
+      struct mmap_struct entry = *mentry;
+      mentry->length = va-mentry->start_va;
+      entry.start_va = va;
+      entry.file_offset+=mentry->length;
+      entry.length-=mentry->length;
+      while(entry.length > length){
+        store_mmap(mentry->f_ip, entry.start_va+length, entry.file_offset+length, entry.length-length, &p->mmap_list, entry.flags, entry.prot);
+        entry.length = length;
+      }
+      length-=entry.length;
+      va+=entry.length;
+      unmap_vma_and_free_struct(&entry, p->pagetable, 0);    
+    }
   }
+  if(length < 0)
+    panic("unmmap: unexpected state");
   return 0;
 }
 
 // Allocate mmapped page if valid.
 // If mapped page is already 
 uint64
-mmap_fault(pagetable_t pagetable, uint64 va, int read, pte_t* pte, void* mmap_v)
+mmap_fault(pagetable_t pagetable, uint64 va, int read, void* mmap_v)
 {
   struct mmap_struct* mv =  find_mmap(va, mmap_v);
+  pte_t* pte;
+  if((uint64)mv == -1)
+    return 0;
   struct inode* f_ip = mv->f_ip;
-  printf("provided va = %p, provided pte = %p, mv = %p\n", (void*)va, pte, mv );
-  printf("mmap fault, file offset = %p, addr = %p\n", (void*)mv->file_offset, (void*)mv->va);
+  printf("provided va = %p, mv = %p\n", (void*)va, mv );
+  printf("mmap fault, file offset = %p, addr = %p, type = %s\n", (void*)mv->file_offset, (void*)mv->start_va, mv->flags&MAP_SHARED?"Map shared": "map private");
   void* page = kalloc();
   if(page == 0)
     panic("mmap kalloc: out of pages");
   ilock(f_ip);
-  int read_size = readi(f_ip, 0, (uint64)page, mv->file_offset, PGSIZE);
+  int read_size = readi(f_ip, 0, (uint64)page, (va-mv->start_va)+mv->file_offset, PGSIZE);
   iunlock(f_ip);
   memset(page+read_size, 0, PGSIZE-read_size);
-  *pte = PTE_FLAGS(*pte) | PTE_U | PA2PTE(page);
+  pte = walk(pagetable, va, 1);
+  if(*pte & PTE_V)
+    panic("Mmap page fault: pte already mapped");
+  *pte = PA2PTE(page) | PTE_U | mv->prot | PTE_V;
   // vmprint(pagetable);
   return (uint64)page;
 }

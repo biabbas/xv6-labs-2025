@@ -37,7 +37,7 @@ int             fileread(struct file*, uint64, int n);
 int             filestat(struct file*, uint64 addr);
 int             filewrite(struct file*, uint64, int n);
 
-uint64 mmap_fault(pagetable_t pagetable, uint64 va, int read, pte_t* pte, void* mmap_list);
+uint64 mmap_fault(pagetable_t pagetable, uint64 va, int read, void* mmap_list);
 
 // fs.c
 void            fsinit(int);

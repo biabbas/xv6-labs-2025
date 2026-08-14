@@ -40,9 +40,20 @@ extern struct devsw devsw[];
 #define CONSOLE 1
 
 struct mmap_struct{
+  uint64 start_va;
+  uint64 length;
   struct inode* f_ip;
-  uint64 va;
   off_t file_offset;
+  int flags;
+  int prot;
+  struct mmap_struct* next;
+  struct mmap_struct* prev;
+};
+
+struct page_cache{
+  struct inode* f_ip;
+  off_t file_offset;
+  uint64 pa;
   struct mmap_struct* next;
   struct mmap_struct* prev;
 };
