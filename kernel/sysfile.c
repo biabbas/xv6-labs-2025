@@ -505,29 +505,19 @@ sys_pipe(void)
   return 0;
 }
 
-uint64 find_va(int length, pagetable_t p_tbl, uint64 pmapped)
+struct mmap_struct* freelist = 0;
+struct spinlock freelist_lock;
+struct spinlock pagecache_lock;
+
+void mmap_global_locks_init()
 {
-  uint64 init = TRAPFRAME;
-  int found_length = 0;
-  while(found_length < length)
-  {
-    init-=PGSIZE;
-    printf("check va %p\n", (void*)init);
-    if(ismapped(p_tbl, init)) {
-      found_length = 0;
-    }
-    else{
-      found_length+=PGSIZE;
-    }
-    if(init < pmapped)
-      return -1;
-  }
-  return init;
+  initlock(&freelist_lock, "mmapstruct freelist lock");
+  initlock(&pagecache_lock, "page cache mmap lock");
 }
 
-struct mmap_struct* freelist = 0;
 void free_mmap(struct mmap_struct* mapping)
 {
+  acquire(&freelist_lock);
   if(freelist == 0){
     mapping->next = mapping;
     mapping->prev = mapping;
@@ -539,6 +529,7 @@ void free_mmap(struct mmap_struct* mapping)
     mapping->prev = freelist->prev;
     freelist->prev = mapping;
   }
+  release(&freelist_lock);
 }
 
 struct mmap_struct* get_mapping()
@@ -553,6 +544,7 @@ struct mmap_struct* get_mapping()
     }
   }
   else{
+    acquire(&freelist_lock);
     if(freelist->next == freelist){
       if(freelist->prev != freelist)
         panic("mmap: getmapping doubly list not in assumed state");
@@ -565,6 +557,7 @@ struct mmap_struct* get_mapping()
       freelist->prev = new_mapping->prev;
       new_mapping->prev = new_mapping->next = 0;
     }
+    release(&freelist_lock);
   }
   return new_mapping;
 }
@@ -584,9 +577,27 @@ struct mmap_struct* find_mmap(uint64 va, struct mmap_struct* mmap_v){
   return (void*)(uint64)-1;
 }
 
-// Todo: add code to check if vma already exists.
-void store_mmap(struct inode* ip, uint64 va, off_t f_off, int length, void** mmapv_ptr, int flags, int perms)
+struct mmap_struct* detect_overlap(uint64 va, int length, struct mmap_struct* mmap_v){
+  struct mmap_struct* node = mmap_v;
+  while(node != 0){
+    if(va - node->start_va < node->length)
+      return node;
+    if(node->start_va - va < length)
+      return node;
+    if(node->next == mmap_v)
+      break;
+    else
+      node = node->next;
+  }
+  return (void*)(uint64)-1;
+}
+
+int store_mmap(struct inode* ip, uint64 va, off_t f_off, int length, void** mmapv_ptr, int flags, int perms)
 {
+  if((uint64)detect_overlap(va, length, *mmapv_ptr) != -1){
+    printf("mmap: overlap detected\n");
+    return -1;
+  }
   struct mmap_struct* mmap_v = get_mapping();
   struct mmap_struct* list;
   mmap_v->start_va = va;
@@ -608,6 +619,23 @@ void store_mmap(struct inode* ip, uint64 va, off_t f_off, int length, void** mma
     mmap_v->prev = list->prev;
     list->prev = mmap_v; 
   }
+  return 0;
+}
+
+uint64 find_va(int length, uint64 program_size, struct mmap_struct* mmap_list)
+{
+  uint64 init = TRAPFRAME-PGSIZE;
+  init-=length;
+  while(init > program_size){
+    struct mmap_struct* overlap = detect_overlap(init, length, mmap_list);
+    if((uint64)overlap == -1){
+      printf("findva mapping %p length %d\n", (void*)init, length);
+      return init;
+    }
+    else
+      init = overlap->start_va-length;
+  }
+  return -1;
 }
 
 uint64
@@ -635,7 +663,7 @@ sys_mmap(void)
   }
   struct proc* p = myproc();
   if(addr == 0)
-    if((addr = find_va(length, p->pagetable, p->sz)) == -1){
+    if((addr = find_va(length,p->sz, p->mmap_list)) == -1){
       printf("mmap: Failed to adjust virtual address\n");
       return -1;
     }
@@ -645,8 +673,11 @@ sys_mmap(void)
       return -1;
     }
   int perms = ((prot&PROT_READ)? PTE_R:0) | ((prot&PROT_EXEC)? PTE_X:0) | ((prot&PROT_WRITE)?PTE_W:0);
-
-  store_mmap(f->ip, addr, offset, length, &p->mmap_list, flags, perms);
+  
+  if(addr < p->sz)
+    return -1;
+  if((uint64)store_mmap(f->ip, addr, offset, length, &p->mmap_list, flags, perms) == -1)
+    return -1;
 
   printf("mmap successful addr = %p\n",(void*)addr);
 
@@ -677,6 +708,7 @@ unmap_vma_and_free_struct(struct mmap_struct* mentry, pagetable_t pagetable, int
       page = PTE2PA(*pte);
       kfree((void*)page);
     }
+    *pte=0;
     mentry->start_va+=PGSIZE;
     mentry->length-=PGSIZE;
   }
@@ -714,7 +746,9 @@ sys_munmap(void)
     {
       remove_from_list(mentry, &p->mmap_list);
       if(mentry->length > length){
-        store_mmap(mentry->f_ip, mentry->start_va+length, mentry->file_offset+length, mentry->length-length, &p->mmap_list, mentry->flags, mentry->prot);
+        if(
+        store_mmap(mentry->f_ip, mentry->start_va+length, mentry->file_offset+length, mentry->length-length, &p->mmap_list, mentry->flags, mentry->prot))
+        panic("munmap: unexpected vma state");
         mentry->length = length;
       }
       length-=mentry->length;
@@ -729,7 +763,9 @@ sys_munmap(void)
       entry.file_offset+=mentry->length;
       entry.length-=mentry->length;
       while(entry.length > length){
-        store_mmap(mentry->f_ip, entry.start_va+length, entry.file_offset+length, entry.length-length, &p->mmap_list, entry.flags, entry.prot);
+        if(
+        store_mmap(mentry->f_ip, entry.start_va+length, entry.file_offset+length, entry.length-length, &p->mmap_list, entry.flags, entry.prot))
+        panic("munmap: Unexpected vma list state");
         entry.length = length;
       }
       length-=entry.length;

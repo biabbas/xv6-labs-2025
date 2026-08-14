@@ -189,6 +189,9 @@ void            vmprint(pagetable_t);
 pte_t*          pgpte(pagetable_t, uint64);
 #endif
 
+// sysfile.c
+void mmap_global_locks_init();
+
 // plic.c
 void            plicinit(void);
 void            plicinithart(void);
