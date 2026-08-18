@@ -37,8 +37,6 @@ int             fileread(struct file*, uint64, int n);
 int             filestat(struct file*, uint64 addr);
 int             filewrite(struct file*, uint64, int n);
 
-uint64 mmap_fault(pagetable_t pagetable, uint64 va, int read, void* mmap_list);
-
 // fs.c
 void            fsinit(int);
 int             dirlink(struct inode*, char*, uint);
@@ -190,7 +188,9 @@ pte_t*          pgpte(pagetable_t, uint64);
 #endif
 
 // sysfile.c
-void mmap_global_locks_init();
+void            mmap_global_locks_init();
+void            unmap_mmaplist(pagetable_t pagetable, void* mmap_list);
+uint64          mmap_fault(pagetable_t pagetable, uint64 va, int read, void* mmap_list);
 
 // plic.c
 void            plicinit(void);

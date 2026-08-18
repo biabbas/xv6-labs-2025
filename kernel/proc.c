@@ -158,8 +158,11 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  if(p->mmap_list)
+    unmap_mmaplist(p->pagetable, p->mmap_list);
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  p->mmap_list = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -272,6 +275,7 @@ kfork(void)
     return -1;
   }
   np->sz = p->sz;
+  // copy_mmap_list(np->, mmap_list)
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);

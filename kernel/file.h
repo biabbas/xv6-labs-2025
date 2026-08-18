@@ -53,9 +53,10 @@ struct mmap_struct{
 struct page_cache{
   struct inode* f_ip;
   off_t file_offset;
+  int ref_count;
   uint64 pa;
-  struct mmap_struct* next;
-  struct mmap_struct* prev;
+  struct page_cache* next;
+  struct page_cache* prev;
 };
 
 #define MMAP_LIMIT 20
