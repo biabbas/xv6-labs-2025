@@ -341,6 +341,11 @@ kexit(int status)
     }
   }
 
+// We need to finish the filesystem changes here.
+// Doing this in freeproc results in holding locks( parent process held child lock twice)
+  if(p->mmap_list)
+    unmap_mmaplist(p->pagetable, p->mmap_list); 
+  p->mmap_list = 0;
   begin_op();
   iput(p->cwd);
   end_op();

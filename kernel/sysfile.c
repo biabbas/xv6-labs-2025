@@ -828,7 +828,6 @@ unmap_vma_and_free_struct(struct mmap_struct* mentry, pagetable_t pagetable, int
 
 void
 unmap_mmaplist(pagetable_t pagetable, void* mmap_list){
-  printf("proc = %d\n", myproc()->pid);
   struct mmap_struct* node = mmap_list;
   struct mmap_struct* next;
   while(node != 0){
