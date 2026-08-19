@@ -275,7 +275,7 @@ kfork(void)
     return -1;
   }
   np->sz = p->sz;
-  // copy_mmap_list(np->, mmap_list)
+  np->mmap_list = mmap_vma_clone(p->mmap_list);
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);

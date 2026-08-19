@@ -17,6 +17,11 @@
 #include "fcntl.h"
 #include "memlayout.h"
 
+#ifdef DEBUG
+#define dbg_print(a) printf a
+#else
+#define dbg_print(a) ((void)0)
+#endif
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -518,6 +523,7 @@ void mmap_global_locks_init()
 
 void free_small_block(struct mmap_struct* mapping)
 {
+  dbg_print(("small_block_allocator: freed: %p\n", mapping));
   acquire(&freelist_lock);
   if(freelist == 0){
     mapping->next = mapping;
@@ -560,6 +566,7 @@ void* get_small_block()
     }
     release(&freelist_lock);
   }
+  dbg_print(("small_block_allocator: Allocated: %p\n", new_mapping));
   return new_mapping;
 }
 
@@ -611,6 +618,7 @@ struct page_cache* get_page_cache(struct inode* ip, off_t fileoff){
   release(&pagecache_lock);
   return new_cache;
 }
+
 int write_page(struct page_cache* pcache){
   int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
   int n = PGSIZE;
@@ -692,13 +700,14 @@ struct mmap_struct* detect_overlap(uint64 va, int length, struct mmap_struct* mm
     else
       node = node->next;
   }
-  return (void*)(uint64)-1;
+  return 0;
 }
 
 int store_mmap(struct inode* ip, uint64 va, off_t f_off, int length, void** mmapv_ptr, int flags, int perms)
 {
-  if((uint64)detect_overlap(va, length, *mmapv_ptr) != -1){
-    printf("mmap: overlap detected\n");
+  dbg_print(("store_mmap: entry: va: %p length %d, pid = %d\n", (void*)va, length, myproc()->pid));
+  if(detect_overlap(va, length, *mmapv_ptr) != 0){
+    printf("sys_mmap(): overlap detected\n");
     return -1;
   }
   struct mmap_struct* mmap_v = get_small_block();
@@ -731,8 +740,8 @@ uint64 find_va(int length, uint64 program_size, struct mmap_struct* mmap_list)
   init-=length;
   while(init > program_size){
     struct mmap_struct* overlap = detect_overlap(init, length, mmap_list);
-    if((uint64)overlap == -1){
-      printf("findva mapping %p length %d\n", (void*)init, length);
+    if(overlap == 0){
+      dbg_print(("Suggest mmap range: %p, length %d, pid = %d\n", (void*)init, length, myproc()->pid));
       return init;
     }
     else
@@ -749,6 +758,7 @@ sys_mmap(void)
   off_t offset;
   int prot, flags;
   struct file* f;
+  struct proc* p = myproc();
   argaddr(0, &addr);
   argaddr(1, &length);
   if(length <= 0)
@@ -756,33 +766,31 @@ sys_mmap(void)
   argint(2, &prot);
   argint(3, &flags);
   if(argfd(4, 0, &f) < 0){
-    printf("mmap: file associated with fd not found\n");
+    printf("sys_mmap(): file associated with fd not found, pid = %d\n", p->pid);
     return -1;
   }
   argaddr(5, (unsigned long*)&offset);
   if((addr | offset | length) & 0xfff){
-    printf("mmap: page offset or addr not aligned\n");
+    printf("sys_mmap(): page offset or addr not aligned, pid = %d\n", p->pid);
     return -1;
   }
-  struct proc* p = myproc();
-  if(addr == 0)
+
+  if((addr < p->sz) || (detect_overlap(addr, length, p->mmap_list) != 0))
     if((addr = find_va(length,p->sz, p->mmap_list)) == -1){
-      printf("mmap: Failed to adjust virtual address\n");
+      printf("sys_mmap(): Failed to adjust virtual address, pid = %d\n", p->pid);
       return -1;
     }
   if(!f->writable)
     if((prot&PROT_WRITE) && (flags & MAP_SHARED)){
-      printf("mmap: opening a readonly file with write permission not allowed\n");
+      printf("sys_mmap(): opening a readonly file with write permission not allowed, pid = %d\n", p->pid);
       return -1;
     }
   int perms = ((prot&PROT_READ)? PTE_R:0) | ((prot&PROT_EXEC)? PTE_X:0) | ((prot&PROT_WRITE)?PTE_W:0);
   
-  if(addr < p->sz)
-    return -1;
   if((uint64)store_mmap(f->ip, addr, offset, length, &p->mmap_list, flags, perms) == -1)
     return -1;
 
-  printf("mmap successful addr = %p\n",(void*)addr);
+  dbg_print(("sys_mmap: Successfully mapped addr = %p, pid = %d\n",(void*)addr, p->pid));
 
   return addr;
 }
@@ -804,8 +812,8 @@ unmap_vma_and_free_struct(struct mmap_struct* mentry, pagetable_t pagetable, int
 {
   pte_t* pte;
   uint64 page;
+  dbg_print(("unmapping_vma_and_free_struct: unmapping: %p, length = %ld, pid = %d\n", (void*)mentry->start_va, mentry->length, myproc()->pid));
   while(mentry->length > 0){
-    printf("unmapping %p\n", (void*)mentry->start_va);
     pte = walk(pagetable, mentry->start_va, 0);
     if((*pte != 0) && (*pte & PTE_V)){
       page = PTE2PA(*pte);
@@ -835,8 +843,24 @@ unmap_mmaplist(pagetable_t pagetable, void* mmap_list){
     unmap_vma_and_free_struct(node, pagetable,1);
     if(next == mmap_list)
       break;
+    node = next;
   }
 }
+
+void*
+mmap_vma_clone(void* mmap_list){
+  struct mmap_struct* new = 0;
+  struct mmap_struct* node = mmap_list;
+  while(node != 0){
+    store_mmap(node->f_ip, node->start_va, node->file_offset,
+    node->length, (void**)&new, node->flags, node->prot);
+    if(node->next == mmap_list)
+      break;
+    node = node->next;
+  }
+  return new;
+}
+
 uint64
 sys_munmap(void)
 {
@@ -847,27 +871,27 @@ sys_munmap(void)
   if((size | addr ) & 0xfff)
     return -1;
 
-  printf("unmap %p, to %p\n", (void*)addr, (void*)(addr+size));
   uint64 va;
   uint64 length;
   struct mmap_struct* mentry;
   struct proc* p = myproc();
+  dbg_print(("sys_munmap: %p, to %p, pid =  %d\n", (void*)addr, (void*)(addr+size), p->pid));
   va = addr;
   length = size;
 
   while(length > 0){
     mentry = find_mmap(va, p->mmap_list);
     if((uint64)mentry == -1){
-      printf("unmapping other vma not allowed\n");
+      printf("sys_munmap(): unmapping other vma not allowed, pid = %d\n", p->pid);
       return -1;
     }
     if(mentry->start_va == addr)
     {
       remove_from_list(mentry, &p->mmap_list);
       if(mentry->length > length){
-        if(
-        store_mmap(mentry->f_ip, mentry->start_va+length, mentry->file_offset+length, mentry->length-length, &p->mmap_list, mentry->flags, mentry->prot))
-        panic("munmap: unexpected vma state");
+        int ret = store_mmap(mentry->f_ip, mentry->start_va+length, mentry->file_offset+length, mentry->length-length, &p->mmap_list, mentry->flags, mentry->prot);
+        if(ret)
+        panic("sys_munmap: unexpected vma state");
         mentry->length = length;
       }
       length-=mentry->length;
@@ -884,7 +908,7 @@ sys_munmap(void)
       while(entry.length > length){
         if(
         store_mmap(mentry->f_ip, entry.start_va+length, entry.file_offset+length, entry.length-length, &p->mmap_list, entry.flags, entry.prot))
-        panic("munmap: Unexpected vma list state");
+        panic("sys_munmap: Unexpected vma list state");
         entry.length = length;
       }
       length-=entry.length;
@@ -893,7 +917,7 @@ sys_munmap(void)
     }
   }
   if(length < 0)
-    panic("unmmap: unexpected state");
+    panic("sys_munmmap: unexpected state");
   return 0;
 }
 
@@ -906,10 +930,11 @@ mmap_fault(pagetable_t pagetable, uint64 va, int read, void* mmap_v)
   pte_t* pte;
   if((uint64)mv == -1)
     return 0;
+  pte = walk(pagetable, va, 1);
+  if(*pte & PTE_V)
+    return 0;
   struct inode* f_ip = mv->f_ip;
   off_t file_off = (va-mv->start_va)+mv->file_offset;
-  printf("provided va = %p, mv = %p, pid = %d\n", (void*)va, mv , myproc()->pid);
-  printf("mmap fault, file offset = %p, addr = %p, type = %s\n", (void*)mv->file_offset, (void*)mv->start_va, mv->flags&MAP_SHARED?"Map shared": "map private");
   void* page;
   struct page_cache* pcache;
   if(mv->flags & MAP_SHARED) {
@@ -931,10 +956,9 @@ mmap_fault(pagetable_t pagetable, uint64 va, int read, void* mmap_v)
     else
       strncpy(page, (void*)pcache->pa, PGSIZE);
   }
-  pte = walk(pagetable, va, 1);
-  if(*pte & PTE_V)
-    panic("Mmap page fault: pte already mapped");
   *pte = PA2PTE(page) | PTE_U | mv->prot | PTE_V;
-  // vmprint(pagetable);
+  dbg_print(("MMap page fault handled: provided va = %p, mv = %p, pid = %d\n", (void*)va, mv , myproc()->pid));
+  dbg_print(("file offset = %p, addr = %p, type = %s\n", (void*)mv->file_offset, (void*)mv->start_va, mv->flags&MAP_SHARED?"Map shared": "map private"));
+  dbg_print(("mapped page %p\n", page));
   return (uint64)page;
 }

@@ -192,6 +192,7 @@ pte_t*          pgpte(pagetable_t, uint64);
 void            mmap_global_locks_init();
 void            unmap_mmaplist(pagetable_t pagetable, void* mmap_list);
 uint64          mmap_fault(pagetable_t pagetable, uint64 va, int read, void* mmap_list);
+void*           mmap_vma_clone(void* mmap_list);
 
 // plic.c
 void            plicinit(void);

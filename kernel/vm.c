@@ -98,7 +98,7 @@ pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
   if(va >= MAXVA)
-    panic("walk");
+    panic("walk, va > maxva");
 
   for(int level = 2; level > 0; level--) {
     pte_t *pte = &pagetable[PX(level, va)];
@@ -295,6 +295,7 @@ freewalk(pagetable_t pagetable)
       freewalk((pagetable_t)child);
       pagetable[i] = 0;
     } else if(pte & PTE_V){
+      printf("pte = %p, page = %p, pid = %d\n", (void*)pte, (void*)PTE2PA(pte), myproc()->pid);
       panic("freewalk: leaf");
     }
   }
