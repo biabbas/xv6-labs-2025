@@ -60,16 +60,16 @@ void
 makefile(const char *f)
 {
   int i;
-  int n = PGSIZE/BSIZE;
+  int n = PGSIZE/1024;
 
   unlink(f);
   int fd = open(f, O_WRONLY | O_CREATE);
   if (fd == -1)
     err("open");
-  memset(buf, 'A', BSIZE);
+  memset(buf, 'A', 1024);
   // write 1.5 page
   for (i = 0; i < n + n/2; i++) {
-    if (write(fd, buf, BSIZE) != BSIZE)
+    if (write(fd, buf, 1024) != 1024)
       err("write 0 makefile");
   }
   if (close(fd) == -1)
