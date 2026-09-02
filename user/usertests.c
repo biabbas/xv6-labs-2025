@@ -2964,7 +2964,7 @@ diskfull(char *s)
       break;
     }
     for(int i = 0; i < MAXFILE; i++){
-      char buf[BSIZE];
+      static char buf[BSIZE]; // This might overflow the stack.
       if(write(fd, buf, BSIZE) != BSIZE){
         done = 1;
         close(fd);
@@ -3154,8 +3154,10 @@ drivetests(int quick, int continuous, char *justone) {
         ntests += n;
       }
     }
-    if((free1 = countfree()) < free0) {
-      printf("FAILED -- lost some free pages %d (out of %d)\n", free1, free0);
+// Some free pages might get allocated to buffer caches structs. Thus check if we
+// lose more pages than what can be allocated to buffer cache layer.
+    if(free0 - (free1 = countfree()) > NBUF) {
+      printf("FAILED -- lost more than maximum limit(%d) of free pages %d (out of %d)\n",NBUF, free1, free0);
       if(continuous != 2) {
         return 1;
       }

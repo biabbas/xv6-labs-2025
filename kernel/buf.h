@@ -7,6 +7,10 @@ struct buf {
   uint refcnt;
   struct buf *prev; // LRU cache list
   struct buf *next;
+#if BSIZE == PGSIZE
+  uchar* data;
+#else
   uchar data[BSIZE];
+#endif
 };
 

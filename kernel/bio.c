@@ -44,6 +44,9 @@ binit(void)
   bcache.head.prev = &bcache.head;
   bcache.head.next = &bcache.head;
   for(b = bcache.buf; b < bcache.buf+NBUF; b++){
+#if BSIZE == PGSIZE
+    b->data = 0;
+#endif
     b->next = bcache.head.next;
     b->prev = &bcache.head;
     initsleeplock(&b->lock, "buffer");
@@ -68,6 +71,10 @@ bget(uint dev, uint blockno)
       b->refcnt++;
       release(&bcache.lock);
       acquiresleep(&b->lock);
+#if BSIZE == PGSIZE
+      if(b->data == 0)
+        panic("bget: Buffer valid cache has no page");
+#endif
       return b;
     }
   }
@@ -82,6 +89,12 @@ bget(uint dev, uint blockno)
       b->refcnt = 1;
       release(&bcache.lock);
       acquiresleep(&b->lock);
+#if BSIZE == PGSIZE
+      if(b->data == 0)
+        b->data = kalloc();
+// Note: This memory is never freed as the buffer memory should be valid even if the buffer is
+// not in use anymore. That is we don't have a meaningful way of recovering this yet.
+#endif
       return b;
     }
   }
