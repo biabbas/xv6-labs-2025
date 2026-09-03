@@ -101,6 +101,24 @@ bget(uint dev, uint blockno)
   panic("bget: no buffers");
 }
 
+// Look through buffer cache for block on device dev.
+// If not found, return 0
+// In found, return locked buffer.
+struct buf* bget_pa(uint64 page){
+  struct buf* b;
+  acquire(&bcache.lock);
+  for(b = bcache.head.next; b != &bcache.head; b = b->next){
+    if((uint64)b->data == page){
+      b->refcnt++;
+      release(&bcache.lock);
+      acquiresleep(&b->lock);
+      return b;
+    }
+  }
+  release(&bcache.lock);
+  return 0;
+}
+
 // Return a locked buf with the contents of the indicated block.
 struct buf*
 bread(uint dev, uint blockno)

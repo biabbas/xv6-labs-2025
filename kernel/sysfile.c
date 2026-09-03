@@ -511,7 +511,6 @@ sys_pipe(void)
 }
 
 struct mmap_struct* freelist = 0;
-struct page_cache* pages_freelist=0;
 struct spinlock freelist_lock;
 struct spinlock pagecache_lock;
 
@@ -568,121 +567,6 @@ void* get_small_block()
   }
   dbg_print(("small_block_allocator: Allocated: %p\n", new_mapping));
   return new_mapping;
-}
-
-struct page_cache* find_page(struct inode* ip, off_t fileoff){
-  acquire(&pagecache_lock);
-  struct page_cache* node = pages_freelist;
-  while(node != 0){
-    if(node->f_ip == ip && node->file_offset == fileoff){
-      release(&pagecache_lock);
-      return node;
-    }
-    if(node->next == pages_freelist)
-      break;
-    else
-      node = node->next;
-  }
-  release(&pagecache_lock);
-  return 0;
-}
-
-struct page_cache* get_page_cache(struct inode* ip, off_t fileoff){
-  struct page_cache* p_cache;
-  if((p_cache = find_page(ip, fileoff)) != 0)
-    return p_cache;
-  struct page_cache* new_cache = get_small_block();
-  new_cache->f_ip = ip;
-  new_cache->file_offset = fileoff;
-  uint64 page = (uint64)kalloc();
-  if(page == 0)
-    panic("mmap page cache: kalloc out of memory");
-  ilock(ip);
-  int readsize = readi(ip, 0, page, fileoff, PGSIZE);
-  iunlock(ip);
-  memset((void*)page+readsize, 0, PGSIZE-readsize);
-  new_cache->pa = page;
-  new_cache->ref_count = 0;
-  acquire(&pagecache_lock);
-  if(pages_freelist == 0){
-    new_cache->next = new_cache;
-    new_cache->prev = new_cache;
-    pages_freelist = new_cache;
-  }
-  else{
-    new_cache->next = pages_freelist;
-    pages_freelist->prev->next = new_cache;
-    new_cache->prev = pages_freelist->prev;
-    pages_freelist->prev = new_cache;
-  }
-  release(&pagecache_lock);
-  return new_cache;
-}
-
-int write_page(struct page_cache* pcache){
-  int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
-  int n = PGSIZE;
-  int n1;
-  int i = 0;
-  int r;
-  while(i<n){
-    n1 = n-i;
-    if(n1 > max)
-      n1 = max;
-    begin_op();
-    ilock(pcache->f_ip);
-    r = writei(pcache->f_ip, 0, pcache->pa+i, pcache->file_offset+i, n1);
-    iunlock(pcache->f_ip);
-    end_op();
-    if(r != n1)
-      break;
-    i+=r;
-  }
-  return i != n;
-}
-
-void remove_from_page_cache_list(struct page_cache* p_cache){
-  acquire(&pagecache_lock);
-  p_cache->prev->next = p_cache->next;
-  p_cache->next->prev = p_cache->prev;
-  if(p_cache->next == p_cache){
-    pages_freelist = 0;
-  }
-  else if(pages_freelist == p_cache)
-    pages_freelist = p_cache->next; 
-  release(&pagecache_lock);
-}
-
-struct page_cache* find_pcache_pa(uint64 pa)
-{
-  struct page_cache* p_cache = pages_freelist;
-  acquire(&pagecache_lock);
-  while(p_cache != 0){
-    if(p_cache->pa == pa){
-      break;
-    }
-    if(p_cache->next == pages_freelist)
-      break;
-    else
-      p_cache = p_cache->next;
-  }
-  release(&pagecache_lock);
-  return p_cache->pa == pa? p_cache: 0;
-}
-
-void page_cache_free(uint64 pa, int write_page_to_file){
-  struct page_cache* p_cache = find_pcache_pa(pa);
-  if(p_cache == 0)
-    panic("Page cache entry not found");
-  if(write_page_to_file)
-    if(write_page(p_cache) != 0)
-      panic("writing page failed in mmap shared");
-  p_cache->ref_count--;
-  if(p_cache->ref_count > 0)
-    return;
-  remove_from_page_cache_list(p_cache);
-  kfree((void*)p_cache->pa);
-  free_small_block((void*)p_cache);
 }
 
 // For a va, return mmap struct if va is within the struct's range
@@ -832,11 +716,12 @@ unmap_vma_and_free_struct(struct mmap_struct* mentry, pagetable_t pagetable, int
       if((mentry->flags & MAP_PRIVATE) && (*pte & PTE_W)) // Directly free physically backed mmap private pages
         kfree((void*)page);
       else
-        page_cache_free(page, *pte & PTE_D);
+        page_cache_free(page, (*pte & PTE_D) && (mentry->flags & MAP_SHARED), mentry->f_ip, mentry->file_offset);
     }
     *pte=0;
     mentry->start_va+=PGSIZE;
     mentry->length-=PGSIZE;
+    mentry->file_offset+=PGSIZE;
   }
   if(free){
     begin_op();
@@ -940,57 +825,40 @@ mmap_fault(pagetable_t pagetable, uint64 va, int read, void* mmap_v)
 {
   struct mmap_struct* mv =  find_mmap(va, mmap_v);
   pte_t* pte;
-  void* page;
-  struct page_cache* pcache;
+  void* page = 0;
   if((uint64)mv == -1)
     return 0;
   pte = walk(pagetable, va, 1);
   if(*pte & PTE_V){
     if(read || (*pte & PTE_W) || !(mv->flags & MAP_PRIVATE) || !(mv->prot & PTE_W))
       return 0;
-    page = (void*)PTE2PA(*pte);
-    pcache = find_pcache_pa((uint64)page);
-    if(pcache == 0)
-      return 0;
-    if(pcache->ref_count == 1){
-      remove_from_page_cache_list(pcache);
-      *pte|=PTE_W;
-      free_small_block((void*)pcache);
-    }
-    else{
-      page = kalloc();
-      if(page == 0)
-        panic("mmap kalloc: out of pages");
-      strncpy(page, (char*)pcache->pa, PGSIZE);
-      pcache->ref_count--;
-      *pte = PA2PTE(page) | PTE_U | mv->prot | PTE_V;
-    }
+    page = get_cloned_page(PTE2PA(*pte));
+    *pte = PA2PTE(page) | PTE_U | mv->prot | PTE_V;
     goto return_stmt;
   }
   struct inode* f_ip = mv->f_ip;
   off_t file_off = (va-mv->start_va)+mv->file_offset;
   if((mv->flags & MAP_SHARED) || read) {
-  pcache = get_page_cache(mv->f_ip, file_off);
-  page = (void*)pcache->pa;
-  pcache->ref_count++;
+  page = get_page_address(mv->f_ip, file_off);
+  dbg_print(("mmap_fault: got page address %p from bcache layer\n", page));
+// If this fails, this will should handled by vmfault or panic or by the code for mmap private.
   }
-  else {
-    page = kalloc();
-    pcache = find_page(mv->f_ip, file_off);
-    if(page == 0)
-      panic("mmap kalloc: out of pages");
-    if(pcache == 0){
+  *pte = PA2PTE(page) | PTE_U | mv->prot | PTE_V;
+  if((mv->flags & MAP_PRIVATE)) { // Map private mapping being written to needs a new page.
+    if(page == 0){
+// Either this is a write or the file size is significantly shorter than requested offset
+// that caused get_page_address to fail.
+      page = kalloc();
       ilock(f_ip);
       int read_size = readi(f_ip, 0, (uint64)page, file_off, PGSIZE);
       iunlock(f_ip);
       memset(page+read_size, 0, PGSIZE-read_size);
+      *pte = PA2PTE(page) | PTE_U | mv->prot | PTE_V;
     }
     else
-      strncpy(page, (void*)pcache->pa, PGSIZE);
+      *pte&= ~(pte_t)PTE_W; // This is coming from a bcache, so handle as cow.
   }
-  *pte = PA2PTE(page) | PTE_U | mv->prot | PTE_V;
-  if((mv->flags & MAP_PRIVATE) && read)
-    *pte&= ~(pte_t)PTE_W;
+
   return_stmt:
   dbg_print(("MMap page fault handled: provided va = %p, mv = %p, pid = %d\n", (void*)va, mv , myproc()->pid));
   dbg_print(("file offset = %p, addr = %p, type = %s\n", (void*)mv->file_offset, (void*)mv->start_va, mv->flags&MAP_SHARED?"Map shared": "map private"));

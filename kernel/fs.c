@@ -561,6 +561,82 @@ writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
   return tot;
 }
 
+// Return the page address from bcache layer.
+// Return 0 in case of failure.
+void* get_page_address(struct inode* ip, off_t fileoff){
+  void* page;
+  struct buf* bp;
+  ilock(ip);
+  if(fileoff > ip->size){
+    printf("mmap_fault: page cannot be mapped above file size\n");
+    goto bad_page_offset;
+  }
+  uint addr = bmap(ip, fileoff/BSIZE);
+  if(addr == 0)
+    goto bad_page_offset;
+  bp = bread(ip->dev, addr);
+  bpin(bp);
+  page = bp->data;
+  brelse(bp);
+  iunlock(ip);
+  return page;
+  bad_page_offset:
+  printf("mmap_fault: bad page offset\n");
+  iunlock(ip);
+  return 0;
+}
+
+int page_filled_size(char* pa){
+  int size = PGSIZE;
+  while(size>=0)
+    if(pa[--size] != 0)
+      break;
+  return size+1;
+}
+
+// Used for mmap paged pages to update mapped shared pages and release mapped mmaps pages
+void page_cache_free(uint64 pa, int write_page_to_file, struct inode* ip, off_t fileoffset){
+  struct buf* bp;
+  bp = bget_pa(pa);
+  off_t file_size = fileoffset + page_filled_size((char*)pa);
+  if(write_page_to_file){
+    ilock(ip);
+    uint addr = bmap(ip, fileoffset/BSIZE);
+    if(addr != bp->blockno)
+    {
+      panic("MMap buf fault: unexpected file buffer.");
+    }
+    begin_op();
+    log_write(bp);
+    brelse(bp);
+    if(ip->size < file_size)
+      ip->size = file_size;
+    iupdate(ip);
+    iunlock(ip);
+    end_op();
+  }
+  else
+      brelse(bp);
+  bunpin(bp);
+}
+
+// If this page is part of buffer cache, get a new page with copied contents.
+// Used in cases of Cow enabled mmap private mapping.
+void* get_cloned_page(uint64 page){
+  struct buf* bp = bget_pa(page);
+  if(bp == 0)
+    return 0;
+  void* new_page = kalloc();
+  if(new_page == 0){
+    brelse(bp);
+    return 0;
+  }
+  memmove(new_page, bp->data, PGSIZE);
+  bunpin(bp);
+  brelse(bp);
+  return new_page;
+}
+
 // Directories
 
 int

@@ -19,6 +19,7 @@ void            brelse(struct buf*);
 void            bwrite(struct buf*);
 void            bpin(struct buf*);
 void            bunpin(struct buf*);
+struct buf*     bget_pa(uint64 page);
 
 // console.c
 void            consoleinit(void);
@@ -57,6 +58,9 @@ void            stati(struct inode*, struct stat*);
 int             writei(struct inode*, int, uint64, uint, uint);
 void            itrunc(struct inode*);
 void            ireclaim(int);
+void*           get_page_address(struct inode* ip, off_t fileoff);
+void            page_cache_free(uint64 pa, int write_page_to_file, struct inode* ip, off_t fileoffset);
+void*           get_cloned_page(uint64 page);
 
 // kalloc.c
 void*           kalloc(void);
